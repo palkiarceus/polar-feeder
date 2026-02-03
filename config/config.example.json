@@ -1,0 +1,20 @@
+{
+  "stillness": {
+    "publish_hz": 5,
+    "trigger_threshold": 0.85,
+    "min_duration_s": 2.0
+  },
+  "logging": {
+    "enabled": true,
+    "telemetry_hz": 5,
+    "max_storage_mb": 500,
+    "log_dir": "/var/log/polar_feeder"
+  },
+  "radar": {
+    "enabled": false,
+    "zone_m": [1.0, 2.0, 3.0]
+  },
+  "safety": {
+    "ble_disconnect_safe_idle": true
+  }
+}

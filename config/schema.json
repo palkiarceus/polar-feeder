@@ -1,0 +1,44 @@
+{
+  "type": "object",
+  "properties": {
+    "stillness": {
+      "type": "object",
+      "properties": {
+        "publish_hz": { "type": "number", "minimum": 1, "maximum": 30 },
+        "trigger_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "min_duration_s": { "type": "number", "minimum": 0, "maximum": 60 }
+      },
+      "required": ["publish_hz", "trigger_threshold", "min_duration_s"]
+    },
+    "logging": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "telemetry_hz": { "type": "number", "minimum": 1, "maximum": 30 },
+        "max_storage_mb": { "type": "number", "minimum": 10, "maximum": 5000 },
+        "log_dir": { "type": "string" }
+      },
+      "required": ["enabled", "telemetry_hz", "max_storage_mb", "log_dir"]
+    },
+    "radar": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "zone_m": {
+          "type": "array",
+          "items": { "type": "number", "minimum": 0.1, "maximum": 50 },
+          "minItems": 1
+        }
+      },
+      "required": ["enabled", "zone_m"]
+    },
+    "safety": {
+      "type": "object",
+      "properties": {
+        "ble_disconnect_safe_idle": { "type": "boolean" }
+      },
+      "required": ["ble_disconnect_safe_idle"]
+    }
+  },
+  "required": ["stillness", "logging", "radar", "safety"]
+}
