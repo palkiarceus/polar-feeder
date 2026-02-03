@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Logs / runtime data
+logs/
+*.csv
+*.log
+
+# Runtime/deployment config (DO NOT COMMIT)
+config.json
+runtime_config.json
+/etc/polar_feeder/
+secrets/
+*.pem
+*.key
+
+# Android build outputs
+**/build/
+**/.gradle/
+local.properties
