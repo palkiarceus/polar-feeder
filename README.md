@@ -13,3 +13,8 @@ From the repo root:
 
 ```bash
 bash src/pi/scripts/run_pi.sh
+
+PC: "log_dir": "logs"
+
+
+Pi: "log_dir": "/var/log/polar_feeder"
