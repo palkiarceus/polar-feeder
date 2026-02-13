@@ -22,7 +22,10 @@ class LoggingConfig:
 @dataclass(frozen=True)
 class RadarConfig:
     enabled: bool
-    zone_m: list
+    port: str
+    baud: int
+    timeout_s: float
+    zone_m: list[float]
 
 
 @dataclass(frozen=True)
@@ -77,9 +80,12 @@ def load_config(config_path: str) -> AppConfig:
     )
 
     radar_cfg = RadarConfig(
-        enabled=bool(_require(radar, "enabled")),
-        zone_m=list(_require(radar, "zone_m")),
-    )
+    enabled=bool(_require(radar, "enabled")),
+    port=str(_require(radar, "port")),
+    baud=int(_clamp_num("radar.baud", float(_require(radar, "baud")), 1200, 2_000_000)),
+    timeout_s=_clamp_num("radar.timeout_s", float(_require(radar, "timeout_s")), 0.0, 5.0),
+    zone_m=[float(x) for x in list(_require(radar, "zone_m"))],
+)
 
     safety_cfg = SafetyConfig(
         ble_disconnect_safe_idle=bool(_require(safety, "ble_disconnect_safe_idle")),

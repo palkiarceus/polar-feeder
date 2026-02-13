@@ -2,16 +2,17 @@ import argparse
 import random
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, UTC
 from pathlib import Path
 
 from polar_feeder.config.loader import load_config
 from polar_feeder.logging.csv_logger import CsvSessionLogger, pick_log_dir
 
+from polar_feeder.ble_interface import BleServer
 
 def make_session_id() -> str:
     # e.g., 20260202T213045Z_ab12cd34
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     short = uuid.uuid4().hex[:8]
     return f"{ts}_{short}"
 
@@ -21,10 +22,17 @@ def main() -> int:
     parser.add_argument("--config", default="config/config.example.json", help="Path to JSON config.")
     parser.add_argument("--test-id", default="", help="Optional test_id to include in logs.")
     parser.add_argument("--demo-seconds", type=float, default=10.0, help="How long to run demo loop.")
+    parser.add_argument("--ble-test", action="store_true", help="Start BLE GATT server and print received commands.")
     args = parser.parse_args()
 
     # Load config (validated)
     cfg = load_config(args.config)
+
+    if args.ble_test:
+        ble = BleServer(name="PolarFeeder")
+        ble.set_command_handler(lambda cmd: print("[BLE RX]", cmd.raw))
+        ble.start()  # blocks
+        return 0
 
     # Session concept: enable_flag transitions 0->1 starts
     enable_flag = 1

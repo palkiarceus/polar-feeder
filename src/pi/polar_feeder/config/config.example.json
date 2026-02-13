@@ -11,9 +11,13 @@
     "log_dir": "logs"
   },
   "radar": {
-    "enabled": false,
-    "zone_m": [1.0, 2.0, 3.0]
-  },
+  "enabled": false,
+  "port": "/dev/ttyAMA0",
+  "baud": 115200,
+  "timeout_s": 0.1,
+  "zone_m": [1.0, 2.0, 3.0]
+},
+
   "safety": {
     "ble_disconnect_safe_idle": true
   }

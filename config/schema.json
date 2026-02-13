@@ -28,6 +28,10 @@
           "type": "array",
           "items": { "type": "number", "minimum": 0.1, "maximum": 50 },
           "minItems": 1
+	   "port": { "type": "string" },
+	    "baud": { "type": "integer", "minimum": 1200, "maximum": 2000000 },
+	     "timeout_s": { "type": "number", "minimum": 0.0, "maximum": 5.0 },
+
         }
       },
       "required": ["enabled", "zone_m"]
