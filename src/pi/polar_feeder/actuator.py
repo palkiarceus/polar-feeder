@@ -1,24 +1,23 @@
-"""
-Actuator control via GPIO (gpiod v2).
-
-Drives RF transmitter input or relay pin.
-"""
-
+# actuator.py
 import time
 import gpiod
 
-
 class Actuator:
-    def __init__(self, chip="/dev/gpiochip0", line=17):
+    def __init__(self, chip="/dev/gpiochip0", extend_line=2, retract_line=3, pulse_s=0.2):
         self.chip_path = chip
-        self.line = line
+        self.extend_line = int(extend_line)
+        self.retract_line = int(retract_line)
+        self.pulse_s = float(pulse_s)
 
         settings = gpiod.LineSettings(
             direction=gpiod.line.Direction.OUTPUT,
             output_value=gpiod.line.Value.INACTIVE
         )
 
-        self._config = {self.line: settings}
+        self._config = {
+            self.extend_line: settings,
+            self.retract_line: settings,
+        }
         self._req = None
 
     def open(self):
@@ -28,27 +27,26 @@ class Actuator:
                 consumer="polar_feeder_actuator",
                 config=self._config
             )
+            self._req.set_value(self.extend_line, gpiod.line.Value.INACTIVE)
+            self._req.set_value(self.retract_line, gpiod.line.Value.INACTIVE)
 
     def close(self):
         if self._req is not None:
             self._req.release()
             self._req = None
 
-    def pulse(self, duration=0.2):
-        """
-        Send HIGH pulse for duration (seconds).
-        """
+    def _pulse(self, line: int, duration_s: float | None = None):
         if self._req is None:
             raise RuntimeError("Actuator not opened")
+        d = self.pulse_s if duration_s is None else float(duration_s)
+        d = max(0.05, d)
 
-        self._req.set_value(self.line, gpiod.line.Value.ACTIVE)
-        time.sleep(duration)
-        self._req.set_value(self.line, gpiod.line.Value.INACTIVE)
+        self._req.set_value(line, gpiod.line.Value.ACTIVE)
+        time.sleep(d)
+        self._req.set_value(line, gpiod.line.Value.INACTIVE)
 
-    def extend(self):
-        # customize if needed
-        self.pulse(0.2)
+    def extend(self, duration_s: float | None = None):
+        self._pulse(self.extend_line, duration_s)
 
-    def retract(self):
-        # customize if needed
-        self.pulse(0.2)
+    def retract(self, duration_s: float | None = None):
+        self._pulse(self.retract_line, duration_s)

@@ -71,15 +71,17 @@ class BleServer:
             self.notify("ERR EMPTY\n")
             return
 
-        self._rx_buf += chunk
+        # Normalize common escape sequences some clients send literally
+        # e.g. "ENABLE=1\\n" -> "ENABLE=1\n"
+        chunk = chunk.replace("\\r", "\r").replace("\\n", "\n")
 
+        self._rx_buf += chunk
         responses: List[str] = []
-        while "\n" in self._rx_buf:
-            line, self._rx_buf = self._rx_buf.split("\n", 1)
+
+        def process_line(line: str) -> None:
             line = line.strip()
             if not line:
-                continue
-
+                return
             if self._on_command:
                 try:
                     resp = self._on_command(BleCommand(raw=line))
@@ -87,24 +89,46 @@ class BleServer:
                     resp = f"ERR EXCEPTION {type(e).__name__}"
             else:
                 resp = "ERR NO_HANDLER"
-
-            # Ensure single-line response
             responses.append(resp.strip())
 
-        # If we processed at least one command, notify once with combined responses.
+        # 1) If we have real newlines, process all complete lines
+        while "\n" in self._rx_buf:
+            line, self._rx_buf = self._rx_buf.split("\n", 1)
+            process_line(line)
+
+        # 2) If there were no newlines at all, treat this write as a full command
+        # This makes nRF Connect + MIT App Inventor behave nicely.
+        if not responses and self._rx_buf.strip():
+            process_line(self._rx_buf)
+            self._rx_buf = ""
+
         if responses:
-            payload = "\n".join(responses) + "\n"
-            self.notify(payload)
-        else:
-            # No newline yet -> waiting for completion
-            # Optional: you can choose to ACK partials, but usually better to wait.
-            pass
+            self.notify("\n".join(responses) + "\n")
+
 
     def notify(self, text: str):
+        """
+        Best-effort notify across different bluezero versions.
+        Always updates the readable TX value.
+        """
         if not self._p:
             return
+
         self._tx_value = text
-        self._p.notify(self._srv_id, self._tx_id)
+
+        # Try a few possible notify method names depending on bluezero version.
+        for method_name in ("notify", "send_notify_event", "notify_characteristic"):
+            m = getattr(self._p, method_name, None)
+            if callable(m):
+                try:
+                    m(self._srv_id, self._tx_id)
+                    return
+                except Exception as e:
+                    print(f"[BLE] notify via {method_name} failed: {e}", flush=True)
+
+        # Fallback: no notify available; rely on TX being readable
+        print("[BLE] No notify method available on this bluezero version; TX is readable (poll/read to get updates).", flush=True)
+
 
     def start(self):
         print("BLE Server Starting", flush=True)

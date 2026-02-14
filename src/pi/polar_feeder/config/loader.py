@@ -31,7 +31,10 @@ class RadarConfig:
 @dataclass(frozen=True)
 class SafetyConfig:
     ble_disconnect_safe_idle: bool
-
+@dataclass(frozen=True)
+class ActuatorConfig:
+    retract_delay_ms: int
+    pulse_ms: int
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -39,7 +42,7 @@ class AppConfig:
     logging: LoggingConfig
     radar: RadarConfig
     safety: SafetyConfig
-
+    actuator: ActuatorConfig
 
 def _require(d: Dict[str, Any], key: str) -> Any:
     if key not in d:
@@ -90,5 +93,12 @@ def load_config(config_path: str) -> AppConfig:
     safety_cfg = SafetyConfig(
         ble_disconnect_safe_idle=bool(_require(safety, "ble_disconnect_safe_idle")),
     )
+    act = _require(raw, "actuator")
 
-    return AppConfig(stillness=stillness, logging=logging, radar=radar_cfg, safety=safety_cfg)
+    actuator_cfg = ActuatorConfig(
+        retract_delay_ms=int(_clamp_num("actuator.retract_delay_ms", float(_require(act, "retract_delay_ms")), 0, 3000)),
+        pulse_ms=int(_clamp_num("actuator.pulse_ms", float(_require(act, "pulse_ms")), 50, 1000)),
+    )
+
+    return AppConfig(stillness=stillness, logging=logging, radar=radar_cfg, safety=safety_cfg, actuator=actuator_cfg)
+
