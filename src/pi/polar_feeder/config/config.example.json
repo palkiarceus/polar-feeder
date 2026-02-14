@@ -11,7 +11,7 @@
     "log_dir": "logs"
   },
   "radar": {
-    "enabled": true,
+    "enabled": false,
     "port": "/dev/ttyAMA0",
     "baud": 115200,
     "timeout_s": 0.1,
@@ -24,4 +24,5 @@
     "retract_delay_ms": 2500,
     "pulse_ms": 200
   }
+
 }

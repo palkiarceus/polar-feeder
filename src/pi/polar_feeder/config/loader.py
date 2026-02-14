@@ -31,10 +31,13 @@ class RadarConfig:
 @dataclass(frozen=True)
 class SafetyConfig:
     ble_disconnect_safe_idle: bool
+
+
 @dataclass(frozen=True)
 class ActuatorConfig:
     retract_delay_ms: int
     pulse_ms: int
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -43,6 +46,7 @@ class AppConfig:
     radar: RadarConfig
     safety: SafetyConfig
     actuator: ActuatorConfig
+
 
 def _require(d: Dict[str, Any], key: str) -> Any:
     if key not in d:
@@ -57,10 +61,6 @@ def _clamp_num(name: str, val: float, lo: float, hi: float) -> float:
 
 
 def load_config(config_path: str) -> AppConfig:
-    """
-    Load and validate JSON config.
-    Raises ValueError on invalid config to support safe fallback behavior.
-    """
     p = Path(config_path)
     raw = json.loads(p.read_text(encoding="utf-8"))
 
@@ -68,6 +68,7 @@ def load_config(config_path: str) -> AppConfig:
     log = _require(raw, "logging")
     radar = _require(raw, "radar")
     safety = _require(raw, "safety")
+    act = _require(raw, "actuator")
 
     stillness = StillnessConfig(
         publish_hz=_clamp_num("stillness.publish_hz", float(_require(still, "publish_hz")), 1, 30),
@@ -83,22 +84,26 @@ def load_config(config_path: str) -> AppConfig:
     )
 
     radar_cfg = RadarConfig(
-    enabled=bool(_require(radar, "enabled")),
-    port=str(_require(radar, "port")),
-    baud=int(_clamp_num("radar.baud", float(_require(radar, "baud")), 1200, 2_000_000)),
-    timeout_s=_clamp_num("radar.timeout_s", float(_require(radar, "timeout_s")), 0.0, 5.0),
-    zone_m=[float(x) for x in list(_require(radar, "zone_m"))],
-)
+        enabled=bool(_require(radar, "enabled")),
+        port=str(_require(radar, "port")),
+        baud=int(_clamp_num("radar.baud", float(_require(radar, "baud")), 1200, 2_000_000)),
+        timeout_s=_clamp_num("radar.timeout_s", float(_require(radar, "timeout_s")), 0.0, 5.0),
+        zone_m=[float(x) for x in list(_require(radar, "zone_m"))],
+    )
 
     safety_cfg = SafetyConfig(
         ble_disconnect_safe_idle=bool(_require(safety, "ble_disconnect_safe_idle")),
     )
-    act = _require(raw, "actuator")
 
     actuator_cfg = ActuatorConfig(
         retract_delay_ms=int(_clamp_num("actuator.retract_delay_ms", float(_require(act, "retract_delay_ms")), 0, 3000)),
         pulse_ms=int(_clamp_num("actuator.pulse_ms", float(_require(act, "pulse_ms")), 50, 1000)),
     )
 
-    return AppConfig(stillness=stillness, logging=logging, radar=radar_cfg, safety=safety_cfg, actuator=actuator_cfg)
-
+    return AppConfig(
+        stillness=stillness,
+        logging=logging,
+        radar=radar_cfg,
+        safety=safety_cfg,
+        actuator=actuator_cfg,
+    )

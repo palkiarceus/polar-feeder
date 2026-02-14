@@ -1,4 +1,3 @@
-# actuator.py
 import time
 import gpiod
 
@@ -32,6 +31,11 @@ class Actuator:
 
     def close(self):
         if self._req is not None:
+            try:
+                self._req.set_value(self.extend_line, gpiod.line.Value.INACTIVE)
+                self._req.set_value(self.retract_line, gpiod.line.Value.INACTIVE)
+            except Exception:
+                pass
             self._req.release()
             self._req = None
 

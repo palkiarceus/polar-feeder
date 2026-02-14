@@ -8,7 +8,11 @@ import threading
 
 from polar_feeder.config.loader import load_config
 from polar_feeder.logging.csv_logger import CsvSessionLogger, pick_log_dir
+
+# BLE + Actuator + FSM (your local files)
 from polar_feeder.ble_interface import BleServer
+from polar_feeder.actuator import Actuator
+from polar_feeder.feeder_fsm import FeederFSM
 
 
 def make_session_id() -> str:
@@ -18,7 +22,7 @@ def make_session_id() -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Polar feeder controller (CDR logging/config proof).")
+    parser = argparse.ArgumentParser(description="Polar feeder controller.")
     parser.add_argument("--config", default="config/config.example.json", help="Path to JSON config.")
     parser.add_argument("--test-id", default="", help="Optional test_id to include in logs.")
     parser.add_argument("--demo-seconds", type=float, default=10.0, help="How long to run demo loop.")
@@ -35,18 +39,34 @@ def main() -> int:
         logger = CsvSessionLogger(log_path=log_path, session_id=session_id, test_id=args.test_id)
         logger.open()
 
+        # Runtime values (not persisted)
         runtime = {
             "enable": 0,
-            "stillness_threshold": float(cfg.stillness.trigger_threshold),
-            "stillness_min_duration_s": float(cfg.stillness.min_duration_s),
-            "stillness_publish_hz": float(cfg.stillness.publish_hz),
-            "log_enabled": bool(cfg.logging.enabled),
-            "telemetry_hz": float(cfg.logging.telemetry_hz),
-            "max_storage_mb": float(cfg.logging.max_storage_mb),
-            "radar_enabled": bool(cfg.radar.enabled),
             "ble_disconnect_safe_idle": bool(cfg.safety.ble_disconnect_safe_idle),
-            "actuator_cmd": "IDLE",
+            "retract_delay_ms": int(cfg.actuator.retract_delay_ms),
+            "pulse_ms": int(cfg.actuator.pulse_ms),
+            "radar_enabled": bool(cfg.radar.enabled),
+            "feeder_state": "IDLE",
         }
+
+        # === GPIO pins (BCM) ===
+        # You chose GPIO2 and GPIO3 (pins 3 and 5). Change here if you rewire.
+        EXTEND_GPIO = 2
+        RETRACT_GPIO = 3
+
+        # Setup actuator + FSM
+        act = Actuator(
+            extend_line=EXTEND_GPIO,
+            retract_line=RETRACT_GPIO,
+            pulse_s=runtime["pulse_ms"] / 1000.0,
+        )
+        act.open()
+
+        fsm = FeederFSM(
+            actuator=act,
+            retract_delay_ms=runtime["retract_delay_ms"],
+            cooldown_s=2.0,   # tweak later
+        )
 
         ble = BleServer(name="PolarFeeder")
 
@@ -56,132 +76,60 @@ def main() -> int:
                 return "ERR EMPTY"
             s_up = s.upper()
 
+            # ENABLE=0/1
             if s_up.startswith("ENABLE="):
                 val = s.split("=", 1)[1].strip()
                 if val not in ("0", "1"):
                     return "ERR BAD_VALUE ENABLE"
                 prev = runtime["enable"]
                 runtime["enable"] = int(val)
+
                 logger.log_event(
                     state="BLE_TEST",
                     enable_flag=runtime["enable"],
                     command="ENABLE",
                     result=f"{prev}->{runtime['enable']}",
-                    notes="Runtime enable toggle (not persisted)",
+                    notes="Runtime enable toggle",
                     radar_enabled=runtime["radar_enabled"],
                     radar_zone="",
                 )
                 return f"ACK ENABLE={runtime['enable']}"
-            # ACTUATOR manual control (debug/testing)
+
+            # Manual pulse for testing: ACTUATOR=EXTEND / ACTUATOR=RETRACT
             if s_up.startswith("ACTUATOR="):
                 val = s.split("=", 1)[1].strip().upper()
-
                 if val not in ("EXTEND", "RETRACT"):
                     return "ERR BAD_VALUE ACTUATOR"
 
-                runtime["actuator_cmd"] = val
+                try:
+                    if val == "EXTEND":
+                        act.extend(duration_s=runtime["pulse_ms"] / 1000.0)
+                    else:
+                        act.retract(duration_s=runtime["pulse_ms"] / 1000.0)
+                except Exception as e:
+                    return f"ERR ACTUATOR_FAIL {type(e).__name__}"
 
                 logger.log_event(
                     state="BLE_TEST",
                     enable_flag=runtime["enable"],
                     command="ACTUATOR",
                     result=val,
-                    notes="Manual actuator command",
+                    notes="Manual actuator pulse",
                     radar_enabled=runtime["radar_enabled"],
                     radar_zone="",
-                )       
-
+                )
                 return f"ACK ACTUATOR={val}"
 
-
-            if s_up.startswith("SET "):
-                rest = s[4:].strip()
-                if "=" not in rest:
-                    return "ERR BAD_FORMAT SET"
-                key, value = [x.strip() for x in rest.split("=", 1)]
-                key_l = key.lower()
-
-                if key_l not in runtime or key_l == "enable":
-                    return f"ERR UNKNOWN_KEY {key}"
-
-                def to_bool01(v: str) -> bool:
-                    if v not in ("0", "1"):
-                        raise ValueError
-                    return (v == "1")
-
-                try:
-                    if key_l == "stillness_threshold":
-                        f = float(value)
-                        if f > 1.0 and f <= 100.0:
-                            f = f / 100.0
-                        if not (0.0 <= f <= 1.0):
-                            return "ERR OUT_OF_RANGE stillness_threshold 0 1"
-                        runtime[key_l] = f
-                    elif key_l == "stillness_min_duration_s":
-                        f = float(value)
-                        if not (0.0 <= f <= 60.0):
-                            return "ERR OUT_OF_RANGE stillness_min_duration_s 0 60"
-                        runtime[key_l] = f
-                    elif key_l == "retract_delay_ms":
-                        n = int(value)
-                        if not (0 <= n <= 3000):
-                            return "ERR OUT_OF_RANGE retract_delay_ms 0 3000"
-                        runtime[key_l] = n
-                    elif key_l == "pulse_ms":
-                        n = int(value)
-                        if not (50 <= n <= 1000):
-                            return "ERR OUT_OF_RANGE pulse_ms 50 1000"
-                        runtime[key_l] = n
-                    elif key_l == "stillness_publish_hz":
-                        f = float(value)
-                        if not (1.0 <= f <= 30.0):
-                            return "ERR OUT_OF_RANGE stillness_publish_hz 1 30"
-                        runtime[key_l] = f
-                    elif key_l == "telemetry_hz":
-                        f = float(value)
-                        if not (1.0 <= f <= 30.0):
-                            return "ERR OUT_OF_RANGE telemetry_hz 1 30"
-                        runtime[key_l] = f
-                    elif key_l == "max_storage_mb":
-                        f = float(value)
-                        if not (10.0 <= f <= 5000.0):
-                            return "ERR OUT_OF_RANGE max_storage_mb 10 5000"
-                        runtime[key_l] = f
-                    elif key_l in ("radar_enabled", "log_enabled", "ble_disconnect_safe_idle"):
-                        runtime[key_l] = to_bool01(value)
-                    else:
-                        runtime[key_l] = value
-                except ValueError:
-                    return f"ERR TYPE {key} bad_value"
-
-                logger.log_event(
-                    state="BLE_TEST",
-                    enable_flag=runtime["enable"],
-                    command=f"SET {key_l}",
-                    result=str(runtime[key_l]),
-                    notes="Config parameter set (not persisted yet)",
-                    radar_enabled=runtime["radar_enabled"],
-                    radar_zone="",
-                )
-                return f"ACK {key_l}={runtime[key_l]}"
-
-            if s_up.startswith("GET "):
-                key = s[4:].strip()
-                key_l = key.lower()
-                if key_l not in runtime:
-                    return f"ERR UNKNOWN_KEY {key}"
-                return f"ACK {key_l}={runtime[key_l]}"
-            if s_up in ("GET STATUS", "STATUS"):
-                return(
-                    "ACK STATUS"
+            # STATUS
+            if s_up in ("STATUS", "GET STATUS"):
+                return (
+                    "ACK STATUS "
                     f"enable={runtime['enable']} "
-                    f"state=BLE_TEST "
-                    f"stillness_threshold={runtime['stillness_threshold']} "
-                    f"min_duration_s={runtime['stillness_min_duration_s']} "
-                    f"retract_delay_ms={runtime.get('retract_delay_ms','')} "
-                    f"pulse_ms={runtime.get('pulse_ms','')} "
-                    f"radar_enabled={int(runtime['radar_enabled'])}"
+                    f"feeder_state={runtime['feeder_state']} "
+                    f"retract_delay_ms={runtime['retract_delay_ms']} "
+                    f"pulse_ms={runtime['pulse_ms']}"
                 )
+
             return "ERR UNKNOWN_CMD"
 
         ble.set_command_handler(handle_ble)
@@ -200,14 +148,19 @@ def main() -> int:
         )
 
         BLE_TIMEOUT_S = 5.0
-        print("BLE test mode running. Send newline-terminated commands (end with \\n).", flush=True)
+        tick_hz = 20.0
+        tick_dt = 1.0 / tick_hz
+
+        print("BLE test mode running. Send commands like ENABLE=1 or ACTUATOR=EXTEND", flush=True)
         print(f"Session log: {log_path}", flush=True)
 
         try:
             while True:
+                # Safety: if BLE inactive, force disable
                 if runtime["ble_disconnect_safe_idle"] and runtime["enable"] == 1:
                     if (time.time() - ble.last_rx_time) > BLE_TIMEOUT_S:
                         runtime["enable"] = 0
+                        ble.notify("ACK ENABLE=0\n")
                         logger.log_event(
                             state="BLE_TEST",
                             enable_flag=runtime["enable"],
@@ -217,8 +170,15 @@ def main() -> int:
                             radar_enabled=runtime["radar_enabled"],
                             radar_zone="",
                         )
-                        ble.notify("ACK ENABLE=0\n")
-                time.sleep(0.2)
+
+                # Threat stub for now
+                threat = False
+
+                # Tick FSM
+                fsm.tick(enable=bool(runtime["enable"]), threat=threat)
+                runtime["feeder_state"] = getattr(fsm.state, "name", str(fsm.state))
+
+                time.sleep(tick_dt)
 
         except KeyboardInterrupt:
             logger.log_event(
@@ -230,15 +190,15 @@ def main() -> int:
                 radar_enabled=runtime["radar_enabled"],
                 radar_zone="",
             )
+            try:
+                act.close()
+            except Exception:
+                pass
             logger.close()
             print("BLE test stopped.", flush=True)
             return 0
 
-    # ---------- DEMO LOGGING MODE (your existing code continues here) ----------
-    # ... keep the rest of your original demo loop unchanged ...
-
-
-    # Session concept: enable_flag transitions 0->1 starts
+    # ---------- DEMO LOGGING MODE (your original) ----------
     enable_flag = 1
     state = "ENABLED"
 
@@ -250,7 +210,6 @@ def main() -> int:
     logger = CsvSessionLogger(log_path=log_path, session_id=session_id, test_id=args.test_id)
     logger.open()
 
-    # Event: session start
     logger.log_event(
         state=state,
         enable_flag=enable_flag,
@@ -264,7 +223,6 @@ def main() -> int:
     telemetry_hz = float(cfg.logging.telemetry_hz)
     period_s = 1.0 / telemetry_hz
 
-    # Simulated stillness: raw in [0,1], filtered is a simple low-pass
     still_f = 0.0
 
     t_end = time.time() + float(args.demo_seconds)
@@ -283,7 +241,6 @@ def main() -> int:
         )
         time.sleep(period_s)
 
-    # Event: session end (disable)
     enable_flag = 0
     state = "IDLE"
     logger.log_event(
@@ -297,7 +254,6 @@ def main() -> int:
     )
 
     logger.close()
-
     print(f"Wrote session log: {log_path}")
     return 0
 
