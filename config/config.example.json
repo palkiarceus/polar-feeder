@@ -21,4 +21,8 @@
   "safety": {
     "ble_disconnect_safe_idle": true
   }
+   "actuator":{
+     "retract_delay_ms":2500,
+     "pulse_ms": 200
+   }
 }

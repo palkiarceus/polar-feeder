@@ -10,8 +10,8 @@
     "max_storage_mb": 500,
     "log_dir": "logs"
   },
-  "radar": {
-  "enabled": false,
+"radar": {
+  "enabled": true,
   "port": "/dev/ttyAMA0",
   "baud": 115200,
   "timeout_s": 0.1,
@@ -21,4 +21,8 @@
   "safety": {
     "ble_disconnect_safe_idle": true
   }
+   "actuator":{
+     "retract_delay_ms":2500,
+     "pulse_ms": 200
+   }
 }
