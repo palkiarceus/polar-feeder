@@ -1,0 +1,20 @@
+[Unit]
+Description=Polar Feeder BLE Controller
+After=network.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=arcticproject
+WorkingDirectory=/home/arcticproject/Desktop/polar_bear_project_github/polar-feeder
+Environment=PYTHONPATH=/home/arcticproject/Desktop/polar_bear_project_github/polar-feeder/src/pi
+
+ExecStartPre=/usr/bin/pinctrl set 17 op dl
+ExecStartPre=/usr/bin/pinctrl set 27 op dl
+ExecStart=/home/arcticproject/Desktop/polar_bear_project_github/polar-feeder/.venv/bin/python3 -m polar_feeder.main --ble-test --config src/pi/polar_feeder/config/config.example.json
+
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
