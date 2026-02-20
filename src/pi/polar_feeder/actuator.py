@@ -2,7 +2,7 @@ import time
 import gpiod
 
 class Actuator:
-    def __init__(self, chip="/dev/gpiochip0", extend_line=2, retract_line=3, pulse_s=0.2):
+    def __init__(self, chip="/dev/gpiochip0", extend_line=17, retract_line=27, pulse_s=0.2):
         self.chip_path = chip
         self.extend_line = int(extend_line)
         self.retract_line = int(retract_line)

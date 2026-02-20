@@ -1,7 +1,7 @@
 from polar_feeder.actuator import Actuator
 import time
 
-a = Actuator(extend_line=2, retract_line=3, pulse_s=0.2)
+a = Actuator(extend_line=17, retract_line=27, pulse_s=0.2)
 a.open()
 
 print("EXTEND x3")
