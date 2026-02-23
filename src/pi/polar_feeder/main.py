@@ -27,7 +27,10 @@ def main() -> int:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-
+    import polar_feeder
+    import polar_feeder.actuator as actmod
+    print("[PATH] polar_feeder pkg:", polar_feeder.__file__, flush=True)
+    print("[PATH] actuator mod:", actmod.__file__, flush=True)
     # ---------- BLE TEST MODE ----------
     if args.ble_test:
         # Local imports so demo mode doesn't require these modules
@@ -64,19 +67,21 @@ def main() -> int:
         # === GPIO pins (BCM) ===
         # You said you plan GPIO2 and GPIO3 (physical pins 3 and 5).
         # NOTE: These are I2C SDA/SCL pins. If you see weird behavior, disable I2C or switch pins.
-        EXTEND_GPIO = 17
-        RETRACT_GPIO = 27
+ 
 
-        # Create actuator + FSM
-        act = Actuator(
-            extend_line=EXTEND_GPIO,
-            retract_line=RETRACT_GPIO,
-            pulse_s=runtime["pulse_ms"] / 1000.0,
-        )
-        act.open()
+       # # Create actuator + FSM
+       # act = Actuator(
+       #     extend_line=EXTEND_GPIO,
+       #     retract_line=RETRACT_GPIO,
+       #     pulse_s=runtime["pulse_ms"] / 1000.0,
+       # )
+       # act.open()
 
         # Cooldown is not in config yet; choose something safe for testing
         COOLDOWN_S = 2.0
+        act = Actuator()
+        act.open()
+
         fsm = FeederFSM(
             actuator=act,
             retract_delay_ms=runtime["retract_delay_ms"],
@@ -86,6 +91,9 @@ def main() -> int:
         ble = BleServer(name="PolarFeeder")
 
         def handle_ble(cmd) -> str:
+            print(f"[DEBUG] handle_ble raw={cmd.raw!r}", flush=True)
+            print("[DEBUG] act object:", act, "type:", type(act), flush=True)
+            print("[DEBUG] act has extend?", hasattr(act, "extend"), flush=True)
             s = cmd.raw.strip()
             if not s:
                 return "ERR EMPTY"
@@ -94,6 +102,7 @@ def main() -> int:
             # ENABLE=0/1 controls the session and drives the FSM
             if s_up.startswith("ENABLE="):
                 val = s.split("=", 1)[1].strip()
+                print("[DEBUG] parsed val =", val, flush=True)
                 if val not in ("0", "1"):
                     return "ERR BAD_VALUE ENABLE"
                 prev = runtime["enable"]
@@ -109,44 +118,35 @@ def main() -> int:
                     radar_zone="",
                 )
                 return f"ACK ENABLE={runtime['enable']}"
-
-            # Manual actuator pulse (debug/testing): ACTUATOR=EXTEND / ACTUATOR=RETRACT
+            
             if s_up.startswith("ACTUATOR="):
                 val = s.split("=", 1)[1].strip().upper()
+                print("[DEBUG] entered ACTUATOR branch", flush=True)
+                print("[DEBUG] ACTUATOR cmd ->", val, flush=True)
+
                 if val not in ("EXTEND", "RETRACT"):
                     return "ERR BAD_VALUE ACTUATOR"
 
                 runtime["actuator_cmd"] = val
 
-                # Pulse immediately
+                print("[DEBUG] about to enter try", flush=True)
                 try:
+                    print("[DEBUG] inside try", flush=True)
                     if val == "EXTEND":
-                        act.extend(duration_s=runtime["pulse_ms"] / 1000.0)
+                        print("[DEBUG] calling act.extend()", flush=True)
+                        act.extend()
+                        print("[DEBUG] act.extend() returned", flush=True)
                     else:
-                        act.retract(duration_s=runtime["pulse_ms"] / 1000.0)
+                        print("[DEBUG] calling act.retract()", flush=True)
+                        act.retract()
+                        print("[DEBUG] act.retract() returned", flush=True)
                 except Exception as e:
-                    logger.log_event(
-                        state="BLE_TEST",
-                        enable_flag=runtime["enable"],
-                        command="ACTUATOR",
-                        result="ERROR",
-                        notes=f"Manual actuator command failed: {type(e).__name__}",
-                        radar_enabled=runtime["radar_enabled"],
-                        radar_zone="",
-                    )
-                    return f"ERR ACTUATOR_FAIL {type(e).__name__}"
-
-                logger.log_event(
-                    state="BLE_TEST",
-                    enable_flag=runtime["enable"],
-                    command="ACTUATOR",
-                    result=val,
-                    notes="Manual actuator command (pulsed GPIO)",
-                    radar_enabled=runtime["radar_enabled"],
-                    radar_zone="",
-                )
+                      import traceback
+                      print("[DEBUG] actuator exception full traceback:\n", traceback.format_exc(), flush=True)
+                      return f"ERR ACTUATOR_FAIL {type(e).__name__}"
+                    
                 return f"ACK ACTUATOR={val}"
-
+            
             # SET key=value for runtime parameters (not persisted)
             if s_up.startswith("SET "):
                 rest = s[4:].strip()
