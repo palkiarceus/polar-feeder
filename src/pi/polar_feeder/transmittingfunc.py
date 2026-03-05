@@ -3,64 +3,48 @@ import time
 import json
 from pathlib import Path
 
-CFG_DIR = Path(__file__).resolve().parent / "config"
+# Prefer repo-root config/rf; fallback to package config for older layout
+PKG_DIR = Path(__file__).resolve().parent
+REPO_ROOT = PKG_DIR.parents[3]  # .../src/pi/polar_feeder -> repo root
+RF_DIR_CANDIDATES = [
+    REPO_ROOT / "config" / "rf",
+    PKG_DIR / "config",
+]
 
-def _load(filename:str):
-    p = CFG_DIR / filename
-    with p.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    return data["states"], data["durations"], p
-    
-def transmit1():
-    TX_PIN = 17
-    states, durations, p = _load("rf_signal1.json")
+def _load(filename: str):
+    for d in RF_DIR_CANDIDATES:
+        p = d / filename
+        if p.exists():
+            with p.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data["states"], data["durations"], p
+    raise FileNotFoundError(f"RF signal file not found: {filename} (searched {RF_DIR_CANDIDATES})")
+
+def _transmit(filename: str, tx_pin: int = 17) -> None:
+    states, durations, p = _load(filename)
     print(f"Loaded signal from {p} ({len(states)} pulses).", flush=True)
 
     h = lgpio.gpiochip_open(0)
-    lgpio.gpio_claim_output(h, TX_PIN)
+    try:
+        lgpio.gpio_claim_output(h, tx_pin)
 
-    print("Transmitting 1 now...", flush=True)
-    for s, dt in zip(states, durations):
-        lgpio.gpio_write(h, TX_PIN, s)
-        time.sleep(dt)
+        print(f"Transmitting {filename} on GPIO{tx_pin}...", flush=True)
+        for s, dt in zip(states, durations):
+            lgpio.gpio_write(h, tx_pin, int(s))
+            time.sleep(float(dt))
 
-    lgpio.gpio_write(h, TX_PIN, 0)
-    lgpio.gpiochip_close(h)
-    print("Transmission complete.", flush=True)
-    # Transmit signal
-    for i in range(len(states)):
-        lgpio.gpio_write(h, TX_PIN, states[i])
-        time.sleep(durations[i])
+        lgpio.gpio_write(h, tx_pin, 0)
+        print("Transmission complete.", flush=True)
+    finally:
+        lgpio.gpiochip_close(h)
 
-    # Ensure line ends LOW
-    lgpio.gpio_write(h, TX_PIN, 0)
-
-    lgpio.gpiochip_close(h)
-
-    print("Transmission complete.")
-    return
+def transmit1():
+    _transmit("rf_signal1.json", tx_pin=17)
 
 def transmit2():
-    TX_PIN = 17  # change to 27 if retract should transmit on GPIO27
-    states, durations, p = _load("rf_signal2.json")
-    print(f"Loaded signal from {p} ({len(states)} pulses).", flush=True)
+    _transmit("rf_signal2.json", tx_pin=17)
 
-    h = lgpio.gpiochip_open(0)
-    lgpio.gpio_claim_output(h, TX_PIN)
-
-    print("Transmitting 2 now...", flush=True)
-    for s, dt in zip(states, durations):
-        lgpio.gpio_write(h, TX_PIN, s)
-        time.sleep(dt)
-
-    lgpio.gpio_write(h, TX_PIN, 0)
-    lgpio.gpiochip_close(h)
-    print("Transmission complete.", flush=True)
-
-def transmitwithdelay(delay):
+def transmitwithdelay(delay_s: float):
     transmit1()
-    time.sleep(delay)
+    time.sleep(float(delay_s))
     transmit2()
-    return
-
-
