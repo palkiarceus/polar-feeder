@@ -58,5 +58,6 @@ class FeederFSM:
             if self._deadline is None:
                 self._deadline = now + self.cooldown_s
             if now >= self._deadline:
-                self._set_state(State.LURE, deadline=None)
+                self._lure_extended_once = False
+                self._set_state(State.IDLE, deadline=None)
             return
