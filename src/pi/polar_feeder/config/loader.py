@@ -26,6 +26,7 @@ class RadarConfig:
     baud: int
     timeout_s: float
     zone_m: list[float]
+    distance_jump_m: float
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,12 @@ def load_config(config_path: str) -> AppConfig:
         baud=int(_clamp_num("radar.baud", float(_require(radar, "baud")), 1200, 2_000_000)),
         timeout_s=_clamp_num("radar.timeout_s", float(_require(radar, "timeout_s")), 0.0, 5.0),
         zone_m=[float(x) for x in list(_require(radar, "zone_m"))],
+        distance_jump_m=_clamp_num(
+            "radar.distance_jump_m",
+            float(_require(radar, "distance_jump_m")),
+            0.01,
+            5.0,
+        ),
     )
 
     safety_cfg = SafetyConfig(

@@ -10,7 +10,7 @@ import threading
 from polar_feeder.config.loader import load_config
 from polar_feeder.logging.csv_logger import CsvSessionLogger, pick_log_dir
 from polar_feeder.ble_interface import BleServer
-
+from polar_feeder.radar import RadarReader
 
 def make_session_id() -> str:
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -89,7 +89,18 @@ def main() -> int:
         )
 
         ble = BleServer(name="PolarFeeder")
-
+        
+        radar = None
+        if cfg.radar.enabled:
+            radar = RadarReader(
+                port=cfg.radar.port,
+                baud=cfg.radar.baud,
+                timeout_s=cfg.radar.timeout_s,
+                distance_jump_m=cfg.radar.distance_jump_m,
+            )
+            radar.start()
+            print(f"[RADAR] started on {cfg.radar.port}", flush=True)
+            
         def handle_ble(cmd) -> str:
             print(f"[DEBUG] handle_ble raw={cmd.raw!r}", flush=True)
             print("[DEBUG] act object:", act, "type:", type(act), flush=True)
@@ -297,13 +308,29 @@ def main() -> int:
 
                 # Threat stub for now (later: compute from CV/radar/stillness)
                 threat = False
+                radar_zone = ""
+                radar_notes = ""
+
+                if radar and runtime["enable"] == 1 and runtime["radar_enabled"]:
+                    rr = radar.get_latest()
+                    if rr.valid:
+                        radar_zone = str(rr.bin_index) if rr.bin_index is not None else ""
+                        threat = rr.threat
+                        radar_notes = rr.raw_line
+                        print(
+                            f"[RADAR] bin={rr.bin_index} dist={rr.distance_m} threat={rr.threat}",
+                            flush=True,
+                        )
 
                 # Tick the state machine
                 fsm.tick(enable=bool(runtime["enable"]), threat=threat)
 
                 # Report state for STATUS queries
                 runtime["feeder_state"] = getattr(fsm.state, "name", str(fsm.state))
-
+                
+                runtime["radar_last_bin"] = radar_zone
+                runtime["radar_threat"] = int(threat)
+                
                 time.sleep(tick_dt)
 
         except KeyboardInterrupt:
@@ -316,6 +343,12 @@ def main() -> int:
                 radar_enabled=runtime["radar_enabled"],
                 radar_zone="",
             )
+            try:
+                if radar:
+                    radar.stop()
+            except Exception:
+                pass
+                
             try:
                 act.close()
             except Exception:
