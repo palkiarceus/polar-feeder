@@ -192,6 +192,7 @@ def main() -> int:
                 if val not in ("0", "1"):
                     return "ERR BAD_VALUE ENABLE"
 
+
                 prev = runtime["enable"]
                 runtime["enable"] = int(val)
 
@@ -370,6 +371,7 @@ def main() -> int:
         )
 
         BLE_TIMEOUT_S = 30.0
+        BLE_TIMEOUT_S = 30.0
         print("BLE test mode running. Send newline-terminated commands (end with \\n).", flush=True)
         print(f"Session log: {log_path}", flush=True)
 
@@ -377,6 +379,7 @@ def main() -> int:
             # Run FSM at a steady tick rate
             tick_hz = 20.0
             tick_dt = 1.0 / tick_hz
+            last_radar_seq = -1
             last_radar_seq = -1
 
             # ===== MAIN CONTROL LOOP =====
@@ -426,10 +429,13 @@ def main() -> int:
                     rr = radar.get_latest()
                     if rr.valid and rr.seq != last_radar_seq:
                         last_radar_seq = rr.seq
+                    if rr.valid and rr.seq != last_radar_seq:
+                        last_radar_seq = rr.seq
                         radar_zone = str(rr.bin_index) if rr.bin_index is not None else ""
                         threat = rr.threat
                         radar_notes = rr.raw_line
                         print(
+                            f"[RADAR] NEW seq={rr.seq} bin={rr.bin_index} dist={rr.distance_m} threat={rr.threat}",
                             f"[RADAR] NEW seq={rr.seq} bin={rr.bin_index} dist={rr.distance_m} threat={rr.threat}",
                             flush=True,
                         )
@@ -438,6 +444,10 @@ def main() -> int:
                 fsm.tick(enable=bool(runtime["enable"]), threat=threat)
 
                 # Report state for STATUS queries
+                new_state = getattr(fsm.state, "name", str(fsm.state))
+                if new_state != runtime["feeder_state"]:
+                    print(f"[FSM] {runtime['feeder_state']} -> {new_state}", flush=True)
+                runtime["feeder_state"] = new_state
                 new_state = getattr(fsm.state, "name", str(fsm.state))
                 if new_state != runtime["feeder_state"]:
                     print(f"[FSM] {runtime['feeder_state']} -> {new_state}", flush=True)

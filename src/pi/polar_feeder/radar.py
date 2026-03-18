@@ -55,6 +55,7 @@ class RadarReading:
     threat: bool = False
     valid: bool = False
     seq: int = 0
+    seq: int = 0
 
 
 class RadarReader:
@@ -89,6 +90,7 @@ class RadarReader:
         port: str,
         baud: int = 115200,
         timeout_s: float = 0.1,
+        distance_jump_m: float = 0.50,
         distance_jump_m: float = 0.50,
     ):
         """
@@ -188,6 +190,7 @@ class RadarReader:
                 threat=self._latest.threat,
                 valid=self._latest.valid,
                 seq=self._latest.seq,
+                seq=self._latest.seq,
             )
 
     def _run(self):
@@ -279,4 +282,6 @@ class RadarReader:
             threat=threat,
             valid=True,
             seq=self._seq,
+            seq=self._seq,
         )
+
