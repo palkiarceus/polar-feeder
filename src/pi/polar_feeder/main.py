@@ -62,6 +62,9 @@ def main() -> int:
             # For status reporting
             "actuator_cmd": "IDLE",
             "feeder_state": "IDLE",
+            "radar_last_bin": "",
+            "radar_threat": 0,
+            "enable_armed_at": 0.0,
         }
 
         # === GPIO pins (BCM) ===
@@ -116,8 +119,16 @@ def main() -> int:
                 print("[DEBUG] parsed val =", val, flush=True)
                 if val not in ("0", "1"):
                     return "ERR BAD_VALUE ENABLE"
+
                 prev = runtime["enable"]
                 runtime["enable"] = int(val)
+
+                if runtime["enable"] == 1:
+                    runtime["enable_armed_at"] = time.monotonic()
+                    if radar:
+                        radar.reset_baseline()
+                else:
+                    runtime["enable_armed_at"] = 0.0
 
                 logger.log_event(
                     state="BLE_TEST",
@@ -281,7 +292,7 @@ def main() -> int:
             radar_zone="",
         )
 
-        BLE_TIMEOUT_S = 5.0
+        BLE_TIMEOUT_S = 30.0
         print("BLE test mode running. Send newline-terminated commands (end with \\n).", flush=True)
         print(f"Session log: {log_path}", flush=True)
 
@@ -289,6 +300,7 @@ def main() -> int:
             # Run FSM at a steady tick rate
             tick_hz = 20.0
             tick_dt = 1.0 / tick_hz
+            last_radar_seq = -1
 
             while True:
                 # BLE inactivity safety
@@ -306,19 +318,29 @@ def main() -> int:
                         )
                         ble.notify("ACK ENABLE=0\n")
 
-                # Threat stub for now (later: compute from CV/radar/stillness)
                 threat = False
                 radar_zone = ""
                 radar_notes = ""
 
-                if radar and runtime["enable"] == 1 and runtime["radar_enabled"]:
+                RADAR_ARM_DELAY_S = 1.5
+                fsm_state_name = getattr(fsm.state, "name", str(fsm.state))
+
+                radar_allowed = (
+                    runtime["enable"] == 1
+                    and runtime["radar_enabled"]
+                    and (time.monotonic() - runtime["enable_armed_at"]) >= RADAR_ARM_DELAY_S
+                    and fsm_state_name == "LURE"
+                )
+
+                if radar and radar_allowed:
                     rr = radar.get_latest()
-                    if rr.valid:
+                    if rr.valid and rr.seq != last_radar_seq:
+                        last_radar_seq = rr.seq
                         radar_zone = str(rr.bin_index) if rr.bin_index is not None else ""
                         threat = rr.threat
                         radar_notes = rr.raw_line
                         print(
-                            f"[RADAR] bin={rr.bin_index} dist={rr.distance_m} threat={rr.threat}",
+                            f"[RADAR] NEW seq={rr.seq} bin={rr.bin_index} dist={rr.distance_m} threat={rr.threat}",
                             flush=True,
                         )
 
@@ -326,7 +348,10 @@ def main() -> int:
                 fsm.tick(enable=bool(runtime["enable"]), threat=threat)
 
                 # Report state for STATUS queries
-                runtime["feeder_state"] = getattr(fsm.state, "name", str(fsm.state))
+                new_state = getattr(fsm.state, "name", str(fsm.state))
+                if new_state != runtime["feeder_state"]:
+                    print(f"[FSM] {runtime['feeder_state']} -> {new_state}", flush=True)
+                runtime["feeder_state"] = new_state
                 
                 runtime["radar_last_bin"] = radar_zone
                 runtime["radar_threat"] = int(threat)

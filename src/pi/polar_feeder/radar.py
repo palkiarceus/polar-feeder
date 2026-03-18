@@ -21,6 +21,7 @@ class RadarReading:
     speed_mps: Optional[float] = None
     threat: bool = False
     valid: bool = False
+    seq: int = 0
 
 
 class RadarReader:
@@ -29,7 +30,7 @@ class RadarReader:
         port: str,
         baud: int = 115200,
         timeout_s: float = 0.1,
-        distance_jump_m: float = 0.20,
+        distance_jump_m: float = 0.50,
     ):
         self.port = port
         self.baud = baud
@@ -44,6 +45,7 @@ class RadarReader:
         self._latest = RadarReading()
         self._prev_dist = None
         self._prev_ts = None
+        self._seq = 0
 
     def start(self):
         self._ser = serial.Serial(self.port, baudrate=self.baud, timeout=self.timeout_s)
@@ -56,7 +58,13 @@ class RadarReader:
             self._thread.join(timeout=1.0)
         if self._ser and self._ser.is_open:
             self._ser.close()
-
+            
+    def reset_baseline(self):
+        with self._lock:
+            self._prev_dist = None
+            self._prev_ts = None
+            self._latest = RadarReading(seq=self._seq)
+            
     def get_latest(self) -> RadarReading:
         with self._lock:
             return RadarReading(
@@ -67,6 +75,7 @@ class RadarReader:
                 speed_mps=self._latest.speed_mps,
                 threat=self._latest.threat,
                 valid=self._latest.valid,
+                seq=self._latest.seq,
             )
 
     def _run(self):
@@ -88,7 +97,7 @@ class RadarReader:
     def _parse_line(self, line: str) -> RadarReading:
         m = RADAR_RE.search(line)
         if not m:
-            return RadarReading(raw_line=line, valid=False)
+            return RadarReading(raw_line=line, valid=False, seq=self._seq)
 
         bin_index = int(m.group("bin"))
         distance_m = float(m.group("dist"))
@@ -100,20 +109,18 @@ class RadarReader:
         if self._prev_dist is not None:
             delta_d = abs(distance_m - self._prev_dist)
 
-            # Alpha demo simple threat rule:
-            # retract if distance changes suddenly by more than threshold
             if delta_d >= self.distance_jump_m:
                 threat = True
 
-            # Optional speed estimate if timestamps are meaningful
             if self._prev_ts is not None and timestamp > self._prev_ts:
                 delta_t = timestamp - self._prev_ts
-                # Only compute if ts units later confirmed
                 # speed_mps = delta_d / delta_t
                 speed_mps = None
 
         self._prev_dist = distance_m
         self._prev_ts = timestamp
+
+        self._seq += 1
 
         return RadarReading(
             raw_line=line,
@@ -123,4 +130,5 @@ class RadarReader:
             speed_mps=speed_mps,
             threat=threat,
             valid=True,
+            seq=self._seq,
         )
