@@ -1,3 +1,17 @@
+"""Configuration loader for the Polar Feeder application.
+
+This module converts a JSON config file into type-safe dataclasses with validation.
+It ensures missing keys are reported clearly and numeric ranges are clamped to safe values.
+
+Config class hierarchy:
+  - StillnessConfig: stillness sensor thresholds and publish cadence
+  - LoggingConfig: telemetry/event logging behavior
+  - RadarConfig: threat sensor connection and sensitivity
+  - SafetyConfig: safety features (e.g., BLE disconnect behavior)
+  - ActuatorConfig: motion control timing parameters
+  - AppConfig: root config object carrying all sub-configs
+"""
+
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,18 +64,21 @@ class AppConfig:
 
 
 def _require(d: Dict[str, Any], key: str) -> Any:
+    """Return d[key] or raise ValueError with clear message."""
     if key not in d:
         raise ValueError(f"Missing required config key: {key}")
     return d[key]
 
 
 def _clamp_num(name: str, val: float, lo: float, hi: float) -> float:
+    """Validate that val is within [lo, hi] inclusive else raise ValueError."""
     if not (lo <= val <= hi):
         raise ValueError(f"{name} out of range [{lo}, {hi}]: {val}")
     return val
 
 
 def load_config(config_path: str) -> AppConfig:
+    """Load JSON config and return AppConfig with validated values."""
     p = Path(config_path)
     raw = json.loads(p.read_text(encoding="utf-8"))
 
