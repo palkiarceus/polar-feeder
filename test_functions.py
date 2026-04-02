@@ -117,6 +117,9 @@ def test_feeder_fsm():
         # Create FSM
         fsm = FeederFSM(actuator=mock_actuator, retract_delay_ms=500, cooldown_s=1.0)
 
+        # Create FSM with feeding distance
+        fsm = FeederFSM(actuator=mock_actuator, retract_delay_ms=500, cooldown_s=1.0, feeding_distance_m=0.5)
+
         # Test initial state
         assert fsm.state == State.IDLE, f"Initial state should be IDLE, got {fsm.state}"
         print("✓ FSM initialized in IDLE state")
@@ -128,10 +131,31 @@ def test_feeder_fsm():
         mock_actuator.extend.assert_called_once()
         print("✓ FSM transitions IDLE -> LURE on enable")
 
-        # Test threat detection -> retract sequence
+        # Test feeding distance -> FEEDING state
+        fsm.tick(enable=True, threat=False, radar_distance_m=0.3, now=start_time + 0.1)  # Bear close!
+        assert fsm.state == State.FEEDING, f"Should transition to FEEDING when bear is close, got {fsm.state}"
+        print("✓ FSM transitions LURE -> FEEDING when bear reaches feeding distance")
+
+        # Test manual retraction from FEEDING
+        success = fsm.manual_retract(now=start_time + 0.2)
+        assert success, "Manual retract should succeed from FEEDING state"
+        assert fsm.state == State.IDLE, f"Should return to IDLE after manual retract, got {fsm.state}"
+        assert mock_actuator.retract.call_count == 1, "Should have called retract once"
+        print("✓ FSM manual retraction from FEEDING state works")
+
+        # Reset and test threat detection -> retract sequence
+        fsm = FeederFSM(actuator=mock_actuator, retract_delay_ms=500, cooldown_s=1.0, feeding_distance_m=0.5)
+        fsm.tick(enable=True, threat=False, now=start_time)
         fsm.tick(enable=True, threat=True, now=start_time + 0.1)
         assert fsm.state == State.RETRACT_WAIT, f"Should transition to RETRACT_WAIT on threat, got {fsm.state}"
         print("✓ FSM transitions LURE -> RETRACT_WAIT on threat")
+
+        # Reset and test vision motion fusion
+        fsm = FeederFSM(actuator=mock_actuator, retract_delay_ms=500, cooldown_s=1.0, motion_threshold=5.0, feeding_distance_m=0.5)
+        fsm.tick(enable=True, threat=False, now=start_time)
+        fsm.tick(enable=True, threat=False, motion_magnitude=6.0, now=start_time + 0.1)
+        assert fsm.state == State.RETRACT_WAIT, "Should transition to RETRACT_WAIT on vision motion threat"
+        print("✓ FSM transitions LURE -> RETRACT_WAIT on vision motion")
 
         # Test retract delay timing
         fsm.tick(enable=True, threat=False, now=start_time + 0.4)  # Before delay
@@ -160,6 +184,55 @@ def test_feeder_fsm():
         import traceback
         traceback.print_exc()
         return False
+
+def test_vision_fusion():
+    """Test vision detection parsing and fusion behavior."""
+    print("\nTesting vision and sensor fusion...")
+
+    try:
+        from polar_feeder.vision import VisionTracker, SensorFusion
+
+        tracker = VisionTracker()
+
+        # Test CSV format parsing
+        d1 = tracker.parse_line("1,100.0,50,200,30,180")
+        assert d1 is not None
+        tracker.update(d1)
+
+        d2 = tracker.parse_line("1,100.1,55,205,35,185")
+        motion = tracker.compute_motion(d2)
+        assert motion > 0.0, f"Expected positive motion, got {motion}"
+
+        # Test YOLO output.txt format parsing
+        yolo_output = """Detection number: 2
+Time: 100.2
+Xmin = 32
+Xmax = 182
+Ymin = 52
+Ymax = 202"""
+        
+        d3 = tracker.parse_yolo_output(yolo_output)
+        assert d3 is not None, "YOLO parser failed"
+        assert d3.detection_id == 2, f"Expected id 2, got {d3.detection_id}"
+        assert d3.timestamp == 100.2, f"Expected timestamp 100.2, got {d3.timestamp}"
+        assert d3.xmin == 32.0, f"Expected xmin 32.0, got {d3.xmin}"
+        assert d3.ymax == 202.0, f"Expected ymax 202.0, got {d3.ymax}"
+        print("✓ YOLO output.txt format parsing works correctly")
+
+        fusion = SensorFusion(motion_threshold=5.0)
+        fusion.update_radar(100.0)
+        fusion.update_vision(100.1)
+        assert fusion.in_sync(0.5)
+        assert fusion.fused_threat(False, motion)
+
+        print("✓ Vision parsing/motion and fusion behavior OK")
+        return True
+    except Exception as e:
+        print(f"✗ Vision fusion test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 
 def test_actuator_interface():
     """Test actuator interface with mocked RF transmission."""

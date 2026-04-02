@@ -36,6 +36,7 @@ from polar_feeder.config.loader import load_config
 from polar_feeder.logging.csv_logger import CsvSessionLogger, pick_log_dir
 from polar_feeder.ble_interface import BleServer
 from polar_feeder.radar import RadarReader
+from polar_feeder.vision import VisionTracker, SensorFusion
 
 
 def make_session_id() -> str:
@@ -116,10 +117,17 @@ def main() -> int:
             # Radar and safety
             "radar_enabled": bool(cfg.radar.enabled),
             "ble_disconnect_safe_idle": bool(cfg.safety.ble_disconnect_safe_idle),
+            "detection_distance_m": float(cfg.radar.detection_distance_m),  # Distance threshold to start game
+
+            # Vision parameters (stillness tolerance)
+            "vision_enabled": bool(cfg.vision.enabled),
+            "motion_threshold": float(cfg.vision.motion_threshold),  # Stillness: movement allowed before threat
+            "sync_window_s": float(cfg.vision.sync_window_s),
 
             # Actuator timing parameters
-            "retract_delay_ms": int(cfg.actuator.retract_delay_ms),  # Delay between extend and retract
+            "retract_delay_ms": int(cfg.actuator.retract_delay_ms),  # Delay: time from threat to retraction
             "pulse_ms": int(cfg.actuator.pulse_ms),                   # RF signal pulse duration
+            "feeding_distance_m": float(cfg.actuator.feeding_distance_m),  # Distance for FEEDING state
 
             # Status tracking for monitoring
             "actuator_cmd": "IDLE",
@@ -127,6 +135,8 @@ def main() -> int:
             "radar_last_bin": "",
             "radar_threat": 0,
             "enable_armed_at": 0.0,
+            "vision_motion": 0.0,
+            "fused_threat": 0,
         }
 
         # ===== INITIALIZE ACTUATOR AND FSM =====
@@ -140,6 +150,9 @@ def main() -> int:
             actuator=act,
             retract_delay_ms=runtime["retract_delay_ms"],
             cooldown_s=COOLDOWN_S,
+            motion_threshold=cfg.vision.motion_threshold,
+            feeding_distance_m=cfg.actuator.feeding_distance_m,
+            detection_distance_m=cfg.radar.detection_distance_m,
         )
 
         # ===== INITIALIZE BLE SERVER =====
@@ -159,7 +172,16 @@ def main() -> int:
             radar.start()
             print(f"[RADAR] started on {cfg.radar.port}", flush=True)
             
-        # ===== BLE COMMAND HANDLER =====
+        # ===== INITIALIZE VISION (OPTIONAL) =====
+        # Set up vision tracking and sensor fusion if enabled in config
+        vision_tracker = None
+        sensor_fusion = None
+        if cfg.vision.enabled:
+            vision_tracker = VisionTracker()
+            sensor_fusion = SensorFusion(
+                motion_threshold=cfg.vision.motion_threshold
+            )
+            print(f"[VISION] initialized with motion_threshold={cfg.vision.motion_threshold}", flush=True)
         # Define the callback function for handling incoming BLE commands
         # This function parses commands and updates the runtime state
         def handle_ble(cmd) -> str:
@@ -245,6 +267,45 @@ def main() -> int:
                     return f"ERR ACTUATOR_FAIL {type(e).__name__}"
                     
                 return f"ACK ACTUATOR={val}"
+            
+            # ===== RETRACT: Manual retraction from FEEDING state =====
+            # Allows safe manual retraction when bear has finished feeding
+            if s_up == "RETRACT":
+                success = fsm.manual_retract()
+                if success:
+                    logger.log_event(
+                        state="FEEDING",
+                        enable_flag=runtime["enable"],
+                        command="RETRACT",
+                        result="SUCCESS",
+                        notes="Manual retraction from FEEDING state",
+                        radar_enabled=runtime["radar_enabled"],
+                        radar_zone="",
+                    )
+                    return "ACK RETRACT"
+                else:
+                    return "ERR RETRACT not_in_feeding_state"
+            
+            # ===== VISION=<detection_line>: Process YOLO detection =====
+            # Parse YOLO detection line and update vision tracking
+            if s_up.startswith("VISION="):
+                if not cfg.vision.enabled:
+                    return "ERR VISION_DISABLED"
+                
+                detection_line = s.split("=", 1)[1].strip()
+                try:
+                    det = vision_tracker.parse_line(detection_line)
+                    if det is None:
+                        return "ERR VISION_PARSE_FAILED"
+                    
+                    motion = vision_tracker.compute_motion(det)
+                    sensor_fusion.update_vision(det.timestamp)
+                    
+                    runtime["vision_motion"] = motion
+                    
+                    return f"ACK VISION motion={motion:.2f}"
+                except Exception as e:
+                    return f"ERR VISION_EXCEPTION {type(e).__name__}"
             
             # SET key=value for runtime parameters (not persisted)
             if s_up.startswith("SET "):
@@ -343,6 +404,10 @@ def main() -> int:
 
             if s_up in ("GET STATUS", "STATUS"):
                 # Keep response compact and readable
+                vision_status = ""
+                if cfg.vision.enabled:
+                    vision_status = f" vision_enabled=1 vision_motion={runtime['vision_motion']:.2f} fused_threat={runtime['fused_threat']}"
+                
                 return (
                     "ACK STATUS "
                     f"enable={runtime['enable']} "
@@ -350,6 +415,7 @@ def main() -> int:
                     f"retract_delay_ms={runtime['retract_delay_ms']} "
                     f"pulse_ms={runtime['pulse_ms']} "
                     f"radar_enabled={int(runtime['radar_enabled'])}"
+                    f"{vision_status}"
                 )
 
             return "ERR UNKNOWN_CMD"
@@ -433,9 +499,39 @@ def main() -> int:
                             f"[RADAR] NEW seq={rr.seq} bin={rr.bin_index} dist={rr.distance_m} threat={rr.threat}",
                             flush=True,
                         )
+                        
+                        # Update sensor fusion with radar timestamp
+                        if sensor_fusion:
+                            sensor_fusion.update_radar(rr.timestamp)
 
-                # Tick the state machine
-                fsm.tick(enable=bool(runtime["enable"]), threat=threat)
+                # ===== SENSOR FUSION =====
+                # Combine radar and vision threats
+                fused_threat = threat
+                motion_magnitude = runtime.get("vision_motion", 0.0)
+                radar_distance_m = rr.distance_m if radar and radar_allowed and 'rr' in locals() and rr.valid else None
+                
+                if sensor_fusion:
+                    # Check if sensors are in sync
+                    in_sync = sensor_fusion.in_sync(runtime["sync_window_s"])
+                    if not in_sync:
+                        print(f"[FUSION] sensors out of sync", flush=True)
+                    
+                    # Get fused threat decision
+                    fused_threat = sensor_fusion.fused_threat(threat, motion_magnitude)
+                    runtime["fused_threat"] = int(fused_threat)
+                    
+                    if fused_threat and not threat:
+                        print(f"[FUSION] vision motion triggered threat (motion={motion_magnitude:.2f})", flush=True)
+
+                # Tick the state machine with fused threat, motion data, and radar distance
+                now = time.monotonic()
+                fsm.tick(
+                    enable=bool(runtime["enable"]), 
+                    threat=fused_threat,
+                    motion_magnitude=motion_magnitude if cfg.vision.enabled else None,
+                    radar_distance_m=radar_distance_m,
+                    now=now
+                )
 
                 # Report state for STATUS queries
                 new_state = getattr(fsm.state, "name", str(fsm.state))

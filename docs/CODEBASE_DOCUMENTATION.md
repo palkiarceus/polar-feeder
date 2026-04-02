@@ -260,15 +260,40 @@ retract_delay = cfg.actuator.retract_delay_ms  # 2500 (ms)
 - `ENABLE=1` - Enable feeder (arm extends if enabled)
 - Response: `ACK ENABLE=<0|1>`
 
-### Manual Actuator Control
-- `ACTUATOR=EXTEND` - Manually extend arm
-- `ACTUATOR=RETRACT` - Manually retract arm
-- Response: `ACK ACTUATOR=<EXTEND|RETRACT>`
+### Manual Retraction
+- `RETRACT` - Manually retract arm from FEEDING state
+- Response: `ACK RETRACT` or `ERR RETRACT not_in_feeding_state`
+
+### Vision Detection Input
+- `VISION=<detection_line>` - Send YOLO detection data
+- Format: `VISION=id,timestamp,ymin,ymax,xmin,xmax`
+- Example: `VISION=1,1690001123.45,50,200,30,180`
+- Response: `ACK VISION motion=<magnitude>`
 
 ### Parameter Configuration
-- `SET retract_delay_ms=<value>` - Change extend-to-retract delay
+
+**User-Configurable Parameters (Three Main Control Variables):**
+
+1. **[DELAY]** `retract_delay_ms` - Delay from threat detection to retraction
+   - `SET retract_delay_ms=<0-3000>` - Range: 0-3000 milliseconds
+   - Example: `SET retract_delay_ms=1500` - 1.5 second delay
+   - Response: `ACK SET retract_delay_ms=<value>`
+
+2. **[STILLNESS]** `motion_threshold` - Movement tolerance before threat
+   - `SET motion_threshold=<0-1000>` - Range: 0-1000 pixels
+   - Example: `SET motion_threshold=15` - Allow 15 pixel movement
+   - Response: `ACK SET motion_threshold=<value>`
+   - Higher value = more movement allowed before triggering threat
+
+3. **[DISTANCE]** `detection_distance_m` - Distance to start the "game"
+   - Configuration only (requires JSON edit or config reload)
+   - Range: 0.5-50.0 meters
+   - If bear is beyond this distance, threat signals are ignored
+
+**Generic Parameter Set:**
 - `SET <key>=<value>` - Set any runtime parameter
 - Response: `ACK SET <key>=<value>`
+- Use `STATUS` to see all current parameter values
 
 ### Status Queries
 - `STATUS` - Get current feeder status

@@ -32,9 +32,10 @@
           "items": { "type": "number", "minimum": 0.1, "maximum": 50 },
           "minItems": 1
         },
-        "distance_jump_m": { "type": "number", "minimum": 0.01, "maximum": 5.0 }
+        "distance_jump_m": { "type": "number", "minimum": 0.01, "maximum": 5.0 },
+        "detection_distance_m": { "type": "number", "minimum": 0.5, "maximum": 50.0 }
       },
-      "required": ["enabled", "port", "baud", "timeout_s", "zone_m", "distance_jump_m"]
+      "required": ["enabled", "port", "baud", "timeout_s", "zone_m", "distance_jump_m", "detection_distance_m"]
     },
     "safety": {
       "type": "object",
@@ -42,15 +43,24 @@
         "ble_disconnect_safe_idle": { "type": "boolean" }
       },
       "required": ["ble_disconnect_safe_idle"]
+    "actuator": {
+      "type": "object",
+      "properties": {
+        "retract_delay_ms": { "type": "integer", "minimum": 0, "maximum": 3000 },
+        "pulse_ms": { "type": "integer", "minimum": 50, "maximum": 1000 },
+        "feeding_distance_m": { "type": "number", "minimum": 0.1, "maximum": 5.0 }
+      },
+      "required": ["retract_delay_ms", "pulse_ms", "feeding_distance_m"]
+    },
+    "vision": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "motion_threshold": { "type": "number", "minimum": 0.0, "maximum": 1000.0 },
+        "sync_window_s": { "type": "number", "minimum": 0.1, "maximum": 5.0 }
+      },
+      "required": ["enabled", "motion_threshold", "sync_window_s"]
     }
   },
-"actuator": {
-  "type": "object",
-  "properties": {
-    "retract_delay_ms": { "type": "integer", "minimum": 0, "maximum": 3000 },
-    "pulse_ms": { "type": "integer", "minimum": 50, "maximum": 1000 }
-  },
-  "required": ["retract_delay_ms", "pulse_ms"]
-},
-"required": ["stillness", "logging", "radar", "safety", "actuator"]
+  "required": ["stillness", "logging", "radar", "safety", "actuator", "vision"]
 }
