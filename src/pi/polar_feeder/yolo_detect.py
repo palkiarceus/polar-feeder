@@ -8,6 +8,11 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
+from polar_feeder.config.loader import load_config
+from polar_feeder.actuator import Actuator
+from polar_feeder.feeder_fsm import FeederFSM
+from polar_feeder.vision import VisionTracker
+
 # Define and parse user input arguments
 
 parser = argparse.ArgumentParser()
@@ -88,6 +93,42 @@ if record:
     record_fps = 30
     recorder = cv2.VideoWriter(record_name, cv2.VideoWriter_fourcc(*'MJPG'), record_fps, (resW,resH))
 
+# ===== Initialize config + FSM ====
+cfg = load_config('config/config.example.json')
+act = Actuator()
+act.open()
+
+fsm = FeederFSM(
+    actuator=act,
+    retract_delay_ms=int(cfg.actuator.retract_delay_ms),
+    cooldown_s=2.0,
+    motion_threshold=float(cfg.vision.motion_threshold),
+    feeding_distance_m=float(cfg.actuator.feeding_distance_m),
+    detection_distance_m=float(cfg.radar.detection_distance_m),
+)
+
+# start in enabled mode by default (set to 0/False to disable)
+feeder_enabled = True
+
+# For testing without BLE, add keyboard control
+import threading
+import keyboard  # pip install keyboard
+
+def keyboard_control():
+    global feeder_enabled
+    while True:
+        if keyboard.is_pressed('e'):
+            feeder_enabled = True
+            print("[CONTROL] Feeder ENABLED")
+            time.sleep(0.5)  # debounce
+        elif keyboard.is_pressed('d'):
+            feeder_enabled = False
+            print("[CONTROL] Feeder DISABLED")
+            time.sleep(0.5)  # debounce
+
+# Start keyboard thread
+threading.Thread(target=keyboard_control, daemon=True).start()
+
 # Load or initialize image source
 if source_type == 'image':
     imgs_list = [img_source]
@@ -126,6 +167,31 @@ fps_avg_len = 200
 img_count = 0
 selected_class_ids = [21]
 detection_count = 0
+
+# In-memory vision tracker for motion calculation
+vision_tracker = VisionTracker()
+
+
+def _send_vision_to_fsm(det, motion_magnitude):
+    """Bridge from YOLO to FSM by calling fsm.tick in-process."""
+    # Determine perceived threat based on motion filter
+    is_threat = motion_magnitude >= float(cfg.vision.motion_threshold)
+
+    # Optionally set radar_distance_m if using a distance sensor
+    radar_distance_m = None
+
+    fsm.tick(
+        enable=feeder_enabled,
+        threat=is_threat,
+        motion_magnitude=motion_magnitude,
+        radar_distance_m=radar_distance_m,
+        now=time.monotonic(),
+    )
+
+    print(
+        f"[VISION] id={det.detection_id} motion={motion_magnitude:.2f} threat={is_threat} "
+        f"fsm_state={fsm.state.name if hasattr(fsm.state, 'name') else fsm.state}"
+    )
 
 
 # Begin inference loop
@@ -183,13 +249,26 @@ while True:
         xyxy_tensor = detections[i].xyxy.cpu() # Detections in Tensor format in CPU memory
         xyxy = xyxy_tensor.numpy().squeeze() # Convert tensors to Numpy array
         xmin, ymin, xmax, ymax = xyxy.astype(int) # Extract individual coordinates and convert to int
-        with open('output.txt', 'a') as file: 
-            file.write('Detection Number: ' + repr(detection_count) + '\n')
-            file.write('Time: ' + repr(time.perf_counter()) + '\n')
-            file.write("Xmin = " + repr(xmin) + '\n')
-            file.write("Xmax = " + repr(xmax) + '\n')
-            file.write("Ymin = " + repr(ymin) + '\n')
-            file.write("Ymax = " + repr(ymax) + '\n')
+
+        # Build in-memory YOLO output block for parser (no file required)
+        yolo_block = (
+            f"Detection number: {detection_count}\n"
+            f"Time: {time.perf_counter()}\n"
+            f"Xmin = {xmin}\n"
+            f"Xmax = {xmax}\n"
+            f"Ymin = {ymin}\n"
+            f"Ymax = {ymax}\n"
+        )
+
+        # Parse this from the in-memory block
+        det = vision_tracker.parse_yolo_output(yolo_block)
+        if det is not None:
+            motion = vision_tracker.compute_motion(det)
+            _send_vision_to_fsm(det, motion)
+
+        # Optionally keep writing to output.txt for audit/debug (legacy behavior)
+        with open('output.txt', 'a') as file:
+            file.write(yolo_block)
 
         # Get bounding box class ID and name
         classidx = int(detections[i].cls.item())
