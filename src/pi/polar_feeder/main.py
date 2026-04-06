@@ -219,14 +219,17 @@ def main() -> int:
             global vision_active
             from picamera2 import Picamera2
             import cv2
-            from polar_feeder.yolo_detect import detect_frame  # Implement this in yolo_detect.py
+            from polar_feeder.yolo_detect import init_yolo_for_ble, detect_frame
 
             try:
+                # Initialize YOLO for BLE mode
+                init_yolo_for_ble("yolov8n.pt")
+                
                 picam2 = Picamera2()
                 config = picam2.create_preview_configuration(main={"size": (640,480),"format":"RGB888"})
                 picam2.configure(config)
                 picam2.start()
-                print("[CAMERA] Thread started", flush=True)
+                print("[CAMERA] Thread started with YOLO detection", flush=True)
 
                 while vision_active:
                     frame = picam2.capture_array()
@@ -236,7 +239,7 @@ def main() -> int:
 
                     # Update FSM tick with motion/threat info
                     fsm.tick(
-                        enable=True,
+                        enable=bool(runtime["enable"]),
                         threat=threat,
                         motion_magnitude=motion,
                         radar_distance_m=None,
@@ -251,6 +254,8 @@ def main() -> int:
 
             except Exception as e:
                 print(f"[CAMERA] Error in camera_loop: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
             finally:
                 print("[CAMERA] Thread stopped", flush=True)
                             
@@ -290,16 +295,11 @@ def main() -> int:
 
             # ===== ENABLE=0/1: Control feeder enable status =====
             if s_up.startswith("ENABLE="):
-<<<<<<< HEAD
                 val = s.split("=", 1)[1].strip()
                 print("[DEBUG] parsed val =", val, flush=True)
                 if val not in ("0", "1"):
                     return "ERR BAD_VALUE ENABLE"
 
-
-=======
-                val = s.split("=",1)[1].strip()
->>>>>>> 32b668566db4333924aaec0d4ef2884882a4dae2
                 prev = runtime["enable"]
                 runtime["enable"] = int(val)
 
@@ -316,7 +316,7 @@ def main() -> int:
                         vision_active = True
                         camera_thread = threading.Thread(target=camera_loop, daemon=True)
                         camera_thread.start()
-                        print("[ENABLE] Camera thread started (Picamera2)", flush=True)
+                        print("[ENABLE] Camera thread started (Picamera2 + YOLO)", flush=True)
 
                     # Log event
                     logger.log_event(

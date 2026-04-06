@@ -14,6 +14,57 @@ from polar_feeder.actuator import Actuator
 from polar_feeder.feeder_fsm import FeederFSM
 from polar_feeder.vision import VisionTracker
 
+# Global variables for detect_frame function
+_model = None
+_vision_tracker = None
+_cfg = None
+
+def init_yolo_for_ble(model_path="yolov8n.pt"):
+    """Initialize YOLO model and vision tracker for BLE mode."""
+    global _model, _vision_tracker, _cfg
+    if _model is None:
+        _cfg = load_config('config/config.example.json')
+        _model = YOLO(model_path, task='detect')
+        _vision_tracker = VisionTracker()
+        print(f"[YOLO] Initialized model {model_path} for BLE mode")
+
+def detect_frame(frame):
+    """Process a single frame and return (threat, motion) tuple for FSM."""
+    global _model, _vision_tracker, _cfg
+    if _model is None or _vision_tracker is None:
+        raise RuntimeError("YOLO not initialized. Call init_yolo_for_ble() first.")
+    
+    # Run inference
+    results = _model(frame, classes=[21], verbose=False)  # Class 21 = bear
+    detections = results[0].boxes
+    
+    threat = False
+    motion = 0.0
+    
+    if len(detections) > 0:
+        # Get first detection (assuming single bear)
+        detection = detections[0]
+        xyxy = detection.xyxy.cpu().numpy().squeeze()
+        xmin, ymin, xmax, ymax = xyxy.astype(int)
+        
+        # Build YOLO output block for parser
+        yolo_block = (
+            f"Detection number: 1\n"
+            f"Time: {time.perf_counter()}\n"
+            f"Xmin = {xmin}\n"
+            f"Xmax = {xmax}\n"
+            f"Ymin = {ymin}\n"
+            f"Ymax = {ymax}\n"
+        )
+        
+        # Parse and compute motion
+        det = _vision_tracker.parse_yolo_output(yolo_block)
+        if det is not None:
+            motion = _vision_tracker.compute_motion(det)
+            threat = motion >= _cfg.vision.motion_threshold
+    
+    return threat, motion
+
 # ===== Threaded PiCamera frame grabber =====
 # Decouples camera capture from inference so the main loop never
 # blocks waiting on the camera sensor. The background thread always
