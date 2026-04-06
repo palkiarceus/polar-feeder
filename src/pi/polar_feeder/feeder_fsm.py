@@ -75,6 +75,7 @@ class FeederFSM:
     - Safe disable-to-idle transition (retracts immediately if disabled)
     - Threat-triggered retraction with configurable delay
     - Cooldown period to prevent mechanism damage
+    - Distance-adaptive stillness thresholds (closer = stricter)
     - Time-based state transitions using deadlines
     
     Example Usage:
@@ -83,7 +84,8 @@ class FeederFSM:
         while True:
             threat_detected = motion_sensor.detect()
             feeder_enabled = user_control.is_enabled()
-            feeder.tick(enable=feeder_enabled, threat=threat_detected)
+            distance = radar.get_distance()
+            feeder.tick(enable=feeder_enabled, threat=threat_detected, radar_distance_m=distance)
             time.sleep(0.1)  # Call tick ~10 times per second
     """
     
@@ -97,20 +99,22 @@ class FeederFSM:
                             This allows the animal time to grab the food. Range: 0-3000ms typical.
             cooldown_s: Delay in seconds before allowing another extend cycle after retraction.
                        Prevents rapid cycling that could damage the mechanism. Default: 2.0s
-            motion_threshold: Movement magnitude threshold (in pixel units) - "stillness" allows this much movement.
-                              Default: 20.0 pixels
+            motion_threshold: Base movement magnitude threshold (in pixel units) at maximum distance.
+                             This gets scaled down as bear gets closer for stricter stillness requirements.
+                             Default: 20.0 pixels at 3m detection distance
             feeding_distance_m: Distance in meters at which bear is considered "close enough to feed".
                                When bear reaches this distance in LURE state, transitions to FEEDING.
                                Default: 0.5m
-            detection_distance_m: Distance threshold in meters - "Game starts" when bear enters within this distance.
-                                 If bear is beyond this, threat signals are not sent and feeder stays in LURE.
-                                 Default: 3.0m
+            detection_distance_m: Maximum distance in meters for threat detection.
+                                Bear must be within this distance for the "game" to be active.
+                                Motion thresholds scale linearly from this distance to feeding_distance.
+                                Default: 3.0m
         """
         self.actuator = actuator
         # Convert milliseconds to seconds and ensure non-negative
         self.retract_delay_s = max(0.0, retract_delay_ms / 1000.0)
         self.cooldown_s = max(0.0, cooldown_s)
-        self.motion_threshold = max(0.0, motion_threshold)
+        self.base_motion_threshold = max(0.0, motion_threshold)  # Base threshold at max distance
         self.feeding_distance_m = max(0.0, feeding_distance_m)
         self.detection_distance_m = max(0.0, detection_distance_m)
 
@@ -122,17 +126,49 @@ class FeederFSM:
         # Prevents multiple extends during a single enable period
         self._lure_extended_once = False
 
-    def _set_state(self, s: State, deadline=None):
+    def _adaptive_motion_threshold(self, radar_distance_m: float | None) -> float:
         """
-        Internal method to transition to a new state.
+        Calculate distance-adaptive motion threshold.
         
-        This is the single point of state transition, ensuring consistency across the FSM.
+        As bear gets closer, stricter stillness is required (lower threshold).
+        This mimics biological hunting behavior where close prey must be very still.
         
         Args:
-            s: The new State to transition to
-            deadline: Optional float (from time.monotonic()) when this state should transition to the next.
-                     If None, no automatic deadline-based transition will occur.
+            radar_distance_m: Current radar distance in meters, or None if unknown
+            
+        Returns:
+            Motion threshold in pixels - lower values = stricter stillness required
+            
+        Scaling Logic:
+        - At detection_distance_m (3m): use base_motion_threshold (most lenient)
+        - At feeding_distance_m (0.5m): use minimum threshold (most strict)
+        - Linear interpolation between these points
+        - Beyond detection_distance_m: no threat detection (threshold = infinity)
         """
+        if radar_distance_m is None:
+            # No distance info available - use base threshold
+            return self.base_motion_threshold
+            
+        if radar_distance_m > self.detection_distance_m:
+            # Bear too far away - game hasn't started, no motion threats
+            return float('inf')
+            
+        if radar_distance_m <= self.feeding_distance_m:
+            # Bear very close - maximum stillness required
+            return self.base_motion_threshold * 0.2  # 20% of base threshold
+            
+        # Linear interpolation between detection_distance and feeding_distance
+        # Closer = stricter (lower threshold)
+        distance_range = self.detection_distance_m - self.feeding_distance_m
+        threshold_range = self.base_motion_threshold - (self.base_motion_threshold * 0.2)
+        
+        # How far along the distance range are we? (0.0 = far, 1.0 = close)
+        progress = (self.detection_distance_m - radar_distance_m) / distance_range
+        
+        # Interpolate threshold: higher progress = lower threshold (stricter)
+        adaptive_threshold = self.base_motion_threshold - (progress * threshold_range)
+        
+        return max(adaptive_threshold, self.base_motion_threshold * 0.2)  # Never go below minimum
         self.state = s
         self._deadline = deadline
 
@@ -189,12 +225,15 @@ class FeederFSM:
                 return
 
             # Detection distance check: Only allow threat signals when bear is within detection_distance_m
-            # If radare_distance_m > detection_distance_m, the game hasn't started yet, ignore threats
+            # If radar_distance_m > detection_distance_m, the game hasn't started yet, ignore threats
             bear_is_in_game = radar_distance_m is None or radar_distance_m <= self.detection_distance_m
 
-            fused_threat = threat and bear_is_in_game  # Only threat if bear is within game bounds
-            if motion_magnitude is not None and motion_magnitude >= self.motion_threshold and bear_is_in_game:
-                fused_threat = True
+            # Use adaptive motion threshold based on current distance
+            current_motion_threshold = self._adaptive_motion_threshold(radar_distance_m)
+            
+            fused_threat = threat and bear_is_in_game  # Radar threat (sudden distance jump)
+            if motion_magnitude is not None and motion_magnitude >= current_motion_threshold and bear_is_in_game:
+                fused_threat = True  # Vision threat (motion exceeds adaptive threshold)
 
             if fused_threat:
                 # Threat detected (radar or vision motion). Start the retract delay.

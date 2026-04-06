@@ -19,7 +19,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 
 # Add the src directory to Python path
-sys.path.insert(0, str(Path(__file__).parent / 'src'))
+sys.path.insert(0, str(Path(__file__).parent / 'src' / 'pi'))
 
 def test_config_loader():
     """Test configuration loading and validation."""
@@ -348,6 +348,106 @@ def test_demo_mode():
         traceback.print_exc()
         return False
 
+def test_distance_adaptive_motion():
+    """Test distance-adaptive motion threshold behavior."""
+    print("\nTesting distance-adaptive motion thresholds...")
+
+    try:
+        from polar_feeder.feeder_fsm import FeederFSM
+        from polar_feeder.vision import SensorFusion
+
+        # Create a dummy actuator for testing
+        class DummyActuator:
+            def extend(self): pass
+            def retract(self): pass
+
+        actuator = DummyActuator()
+
+        # Test FSM adaptive threshold
+        fsm = FeederFSM(
+            actuator=actuator,
+            retract_delay_ms=1000,
+            cooldown_s=2.0,
+            motion_threshold=35.0,  # Base threshold at 3m
+            feeding_distance_m=0.5,
+            detection_distance_m=3.0
+        )
+
+        # Test distances and expected thresholds
+        test_cases = [
+            (None, 35.0),      # No distance info = base threshold
+            (3.5, float('inf')), # Too far = no threat detection
+            (3.0, 35.0),       # At max distance = base threshold
+            (2.0, 23.8),       # Midway = interpolated (35.0 - 0.4 * 28.0)
+            (1.0, 12.6),       # Closer = stricter (35.0 - 0.8 * 28.0)
+            (0.5, 7.0),        # At feeding distance = minimum threshold
+            (0.2, 7.0),        # Closer than feeding = still minimum
+        ]
+
+        print("FSM distance-adaptive motion thresholds:")
+        for distance, expected in test_cases:
+            actual = fsm._adaptive_motion_threshold(distance)
+            if distance is None:
+                dist_str = "None"
+            else:
+                dist_str = f"{distance}m"
+
+            if expected == float('inf'):
+                status = "∞ (no detection)" if actual == float('inf') else f"{actual:.1f} ERROR"
+            else:
+                status = f"{actual:.1f}" + (" ✓" if abs(actual - expected) < 0.1 else f" ERROR (expected {expected:.1f})")
+
+            print(f"  Distance {dist_str:>6} → Threshold {status}")
+
+        # Test SensorFusion adaptive threshold
+        fusion = SensorFusion(
+            base_motion_threshold=35.0,
+            detection_distance_m=3.0,
+            feeding_distance_m=0.5
+        )
+
+        print("\nSensorFusion distance-adaptive thresholds:")
+        for distance, expected in test_cases:
+            actual = fusion._adaptive_motion_threshold(distance)
+            if distance is None:
+                dist_str = "None"
+            else:
+                dist_str = f"{distance}m"
+
+            if expected == float('inf'):
+                status = "∞ (no detection)" if actual == float('inf') else f"{actual:.1f} ERROR"
+            else:
+                status = f"{actual:.1f}" + (" ✓" if abs(actual - expected) < 0.1 else f" ERROR (expected {expected:.1f})")
+
+            print(f"  Distance {dist_str:>6} → Threshold {status}")
+
+        # Test fused threat logic
+        print("\nFused threat with distance adaptation:")
+        test_scenarios = [
+            (2.0, 25.0, False, "Motion exceeds threshold at 2m"),
+            (2.0, 20.0, False, "Motion below threshold at 2m"),
+            (0.5, 5.0, False, "Motion exceeds threshold at 0.5m"),
+            (0.5, 10.0, False, "Motion below threshold at 0.5m"),
+            (2.0, 25.0, True, "Radar threat overrides motion at 2m"),
+        ]
+
+        for distance, motion, radar_threat, description in test_scenarios:
+            fused = fusion.fused_threat(radar_threat, motion, distance)
+            expected_threshold = fusion._adaptive_motion_threshold(distance)
+            motion_detected = motion >= expected_threshold
+            final_threat = radar_threat or motion_detected
+
+            print(f"  {description}: {fused} ✓" if fused == final_threat else f"  {description}: {fused} ERROR")
+
+        print("✓ Distance-adaptive motion test completed")
+        return True
+
+    except Exception as e:
+        print(f"✗ Distance-adaptive motion test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def main():
     """Run all tests."""
     print("=" * 60)
@@ -362,6 +462,7 @@ def main():
         test_feeder_fsm,
         test_actuator_interface,
         test_demo_mode,
+        test_distance_adaptive_motion,
     ]
 
     results = []

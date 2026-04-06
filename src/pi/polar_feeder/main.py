@@ -185,9 +185,11 @@ def main() -> int:
         if cfg.vision.enabled:
             vision_tracker = VisionTracker()
             sensor_fusion = SensorFusion(
-                motion_threshold=cfg.vision.motion_threshold
+                base_motion_threshold=cfg.vision.motion_threshold,
+                detection_distance_m=cfg.radar.detection_distance_m,
+                feeding_distance_m=cfg.actuator.feeding_distance_m
             )
-            print(f"[VISION] initialized with motion_threshold={cfg.vision.motion_threshold}", flush=True)
+            print(f"[VISION] initialized with adaptive motion_threshold (base={cfg.vision.motion_threshold})", flush=True)
         # At the top of the BLE test section, add these variables (around line 175-180)
         camera = None
         camera_thread = None
@@ -621,12 +623,13 @@ def main() -> int:
                         pass #
                         # print(f"[FUSION] sensors out of sync", flush=True)
                     
-                    # Get fused threat decision
-                    fused_threat = sensor_fusion.fused_threat(threat, motion_magnitude)
+                    # Get fused threat decision with distance-adaptive thresholding
+                    fused_threat = sensor_fusion.fused_threat(threat, motion_magnitude, radar_distance_m)
                     runtime["fused_threat"] = int(fused_threat)
                     
                     if fused_threat and not threat:
-                        print(f"[FUSION] vision motion triggered threat (motion={motion_magnitude:.2f})", flush=True)
+                        adaptive_threshold = sensor_fusion._adaptive_motion_threshold(radar_distance_m)
+                        print(f"[FUSION] vision motion triggered threat (motion={motion_magnitude:.2f} > threshold={adaptive_threshold:.2f})", flush=True)
 
                 # Tick the state machine with fused threat, motion data, and radar distance
                 now = time.monotonic()

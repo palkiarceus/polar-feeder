@@ -188,10 +188,43 @@ class VisionTracker:
 class SensorFusion:
     """Combine radar and vision info into a fused threat signal."""
 
-    def __init__(self, motion_threshold: float = 20.0):
-        self.motion_threshold = motion_threshold
+    def __init__(self, base_motion_threshold: float = 20.0, detection_distance_m: float = 3.0, feeding_distance_m: float = 0.5):
+        """
+        Initialize sensor fusion with distance-adaptive parameters.
+        
+        Args:
+            base_motion_threshold: Base motion threshold at maximum detection distance
+            detection_distance_m: Maximum distance for threat detection
+            feeding_distance_m: Distance for feeding state transition
+        """
+        self.base_motion_threshold = base_motion_threshold
+        self.detection_distance_m = detection_distance_m
+        self.feeding_distance_m = feeding_distance_m
         self.last_radar_ts: Optional[float] = None
         self.last_cv_ts: Optional[float] = None
+
+    def _adaptive_motion_threshold(self, radar_distance_m: float | None) -> float:
+        """
+        Calculate distance-adaptive motion threshold (same logic as FSM).
+        
+        Returns infinity if distance unknown or bear too far away.
+        """
+        if radar_distance_m is None:
+            return self.base_motion_threshold
+            
+        if radar_distance_m > self.detection_distance_m:
+            return float('inf')
+            
+        if radar_distance_m <= self.feeding_distance_m:
+            return self.base_motion_threshold * 0.2
+            
+        # Linear interpolation
+        distance_range = self.detection_distance_m - self.feeding_distance_m
+        threshold_range = self.base_motion_threshold - (self.base_motion_threshold * 0.2)
+        progress = (self.detection_distance_m - radar_distance_m) / distance_range
+        adaptive_threshold = self.base_motion_threshold - (progress * threshold_range)
+        
+        return max(adaptive_threshold, self.base_motion_threshold * 0.2)
 
     def update_radar(self, radar_ts: float) -> None:
         """Update with latest radar timestamp."""
@@ -207,6 +240,22 @@ class SensorFusion:
             return False
         return abs(self.last_radar_ts - self.last_cv_ts) <= window_s
 
-    def fused_threat(self, radar_threat: bool, motion_magnitude: float) -> bool:
-        """Combine radar and vision threats."""
-        return radar_threat or (motion_magnitude >= self.motion_threshold)
+    def fused_threat(self, radar_threat: bool, motion_magnitude: float, radar_distance_m: float | None = None) -> bool:
+        """
+        Combine radar and vision threats using distance-adaptive motion threshold.
+        
+        Args:
+            radar_threat: Boolean from radar sudden distance change detection
+            motion_magnitude: Vision motion magnitude
+            radar_distance_m: Current radar distance for adaptive thresholding
+            
+        Returns:
+            True if any threat detected (radar or vision)
+        """
+        # Get adaptive motion threshold based on distance
+        adaptive_threshold = self._adaptive_motion_threshold(radar_distance_m)
+        
+        # Vision threat: motion exceeds adaptive threshold
+        vision_threat = motion_magnitude >= adaptive_threshold
+        
+        return radar_threat or vision_threat
