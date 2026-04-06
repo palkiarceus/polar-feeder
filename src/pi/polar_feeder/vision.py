@@ -39,9 +39,26 @@ class Detection:
 class VisionTracker:
     """Tracks detections over time and computes movement deltas."""
 
+    # Number of consecutive missed inference frames before we consider
+    # the bear "lost" and reset the motion baseline. When the bear
+    # reappears after being lost, we return 0.0 instead of a huge
+    # spurious delta caused by the gap in tracking.
+    LOST_THRESHOLD = 5
+
     def __init__(self):
         self.last_detection: Optional[Detection] = None
         self._detection_counter = 0
+        self._frames_since_detection = 0  # incremented by mark_no_detection()
+        self._last_motion: float = 0.0    # exposed for external debug printing
+
+    def mark_no_detection(self) -> None:
+        """Call this each inference frame when no bear is detected.
+
+        Increments the lost-frame counter so that if the bear reappears
+        after LOST_THRESHOLD missed frames, compute_motion() resets the
+        baseline instead of reporting a phantom large displacement.
+        """
+        self._frames_since_detection += 1
 
     def parse_line(self, line: str) -> Optional[Detection]:
         """Parse a detection line into Detection instance.
@@ -88,7 +105,6 @@ class VisionTracker:
             Detection object or None if parsing fails
         """
         try:
-            # Parse each field from the output format
             detection_id = None
             timestamp_parsed = timestamp
             xmin = None
@@ -114,7 +130,6 @@ class VisionTracker:
                 elif line.startswith("Ymax"):
                     ymax = float(line.split('=')[1].strip())
 
-            # Validate all required fields were parsed
             if any(v is None for v in [detection_id, timestamp_parsed, xmin, xmax, ymin, ymax]):
                 return None
 
@@ -138,10 +153,23 @@ class VisionTracker:
     def compute_motion(self, new_detection: Detection) -> float:
         """Compute motion score (Euclidean movement of bounding-box center).
 
-        Returns large values for more movement.
+        Returns 0.0 on first detection or after bear was lost for
+        LOST_THRESHOLD frames, to avoid phantom spikes on reacquisition.
+        Returns larger values for faster movement.
         """
+        # Bear was lost long enough that the last position is stale —
+        # reset baseline so we don't report a huge phantom displacement.
+        if self._frames_since_detection >= self.LOST_THRESHOLD:
+            self.update(new_detection)
+            self._frames_since_detection = 0
+            self._last_motion = 0.0
+            return 0.0
+
+        # First detection ever
         if self.last_detection is None:
             self.update(new_detection)
+            self._frames_since_detection = 0
+            self._last_motion = 0.0
             return 0.0
 
         old_center = self.last_detection.center()
@@ -149,10 +177,12 @@ class VisionTracker:
 
         dx = new_center[0] - old_center[0]
         dy = new_center[1] - old_center[1]
+        motion = (dx ** 2 + dy ** 2) ** 0.5
 
         self.update(new_detection)
-
-        return (dx ** 2 + dy ** 2) ** 0.5
+        self._frames_since_detection = 0
+        self._last_motion = motion
+        return motion
 
 
 class SensorFusion:
@@ -179,4 +209,4 @@ class SensorFusion:
 
     def fused_threat(self, radar_threat: bool, motion_magnitude: float) -> bool:
         """Combine radar and vision threats."""
-        return radar_threat or (motion_magnitude >= self.motion_threshold) 
+        return radar_threat or (motion_magnitude >= self.motion_threshold)

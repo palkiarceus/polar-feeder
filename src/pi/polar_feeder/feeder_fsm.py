@@ -207,6 +207,28 @@ class FeederFSM:
             # Stay in FEEDING state until manual intervention
             # Only external command (like button press) can transition out
             return
+     # RETRACT_WAIT state: Waiting for retract_delay before pulling the food back
+        if self.state == State.RETRACT_WAIT:
+            # Safety: ensure deadline is set (shouldn't be needed, but defensive coding)
+            if self._deadline is None:
+                self._deadline = now + self.retract_delay_s
+            # Once deadline reached, retract the arm
+            if now >= self._deadline:
+                self.actuator.retract()  # Send RF signal to retract the arm
+                # Now start the cooldown period before allowing another cycle
+                self._set_state(State.COOLDOWN, deadline=now + self.cooldown_s)
+            return
+
+        # COOLDOWN state: Arm retracted, waiting before next cycle to avoid damage
+        if self.state == State.COOLDOWN:
+            # Safety: ensure deadline is set (shouldn't be needed, but defensive coding)
+            if self._deadline is None:
+                self._deadline = now + self.cooldown_s
+            # Once cooldown deadline reached, reset to IDLE for next cycle
+            if now >= self._deadline:
+                self._lure_extended_once = False  # Reset flag to allow extending again
+                self._set_state(State.IDLE, deadline=None)  # Ready to dispense again
+            return
 
     def manual_retract(self, now: float | None = None) -> bool:
         """
@@ -230,25 +252,4 @@ class FeederFSM:
         self._set_state(State.IDLE, deadline=None)
         return True
 
-        # RETRACT_WAIT state: Waiting for retract_delay before pulling the food back
-        if self.state == State.RETRACT_WAIT:
-            # Safety: ensure deadline is set (shouldn't be needed, but defensive coding)
-            if self._deadline is None:
-                self._deadline = now + self.retract_delay_s
-            # Once deadline reached, retract the arm
-            if now >= self._deadline:
-                self.actuator.retract()  # Send RF signal to retract the arm
-                # Now start the cooldown period before allowing another cycle
-                self._set_state(State.COOLDOWN, deadline=now + self.cooldown_s)
-            return
-
-        # COOLDOWN state: Arm retracted, waiting before next cycle to avoid damage
-        if self.state == State.COOLDOWN:
-            # Safety: ensure deadline is set (shouldn't be needed, but defensive coding)
-            if self._deadline is None:
-                self._deadline = now + self.cooldown_s
-            # Once cooldown deadline reached, reset to IDLE for next cycle
-            if now >= self._deadline:
-                self._lure_extended_once = False  # Reset flag to allow extending again
-                self._set_state(State.IDLE, deadline=None)  # Ready to dispense again
-            return
+   

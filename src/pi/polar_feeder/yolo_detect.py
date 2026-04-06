@@ -3,6 +3,7 @@ import sys
 import argparse
 import glob
 import time
+import threading
 
 import cv2
 import numpy as np
@@ -13,8 +14,36 @@ from polar_feeder.actuator import Actuator
 from polar_feeder.feeder_fsm import FeederFSM
 from polar_feeder.vision import VisionTracker
 
-# Define and parse user input arguments
+# ===== Threaded PiCamera frame grabber =====
+# Decouples camera capture from inference so the main loop never
+# blocks waiting on the camera sensor. The background thread always
+# keeps the latest frame hot.
+class PiCameraGrabber:
+    def __init__(self, cap):
+        self.cap = cap
+        self._frame = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
+    def _run(self):
+        while not self._stop.is_set():
+            frame_bgra = self.cap.capture_array()
+            frame = cv2.cvtColor(np.copy(frame_bgra), cv2.COLOR_BGRA2BGR)
+            with self._lock:
+                self._frame = frame
+
+    def get(self):
+        with self._lock:
+            return self._frame
+
+    def stop(self):
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+
+# Define and parse user input arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', help='Path to YOLO model file (example: "runs/detect/train/weights/best.pt")',
                     required=True)
@@ -28,23 +57,26 @@ parser.add_argument('--resolution', help='Resolution in WxH to display inference
                     default=None)
 parser.add_argument('--record', help='Record results from video or webcam and save it as "demo1.avi". Must specify --resolution argument to record.',
                     action='store_true')
+parser.add_argument('--skip', help='Run YOLO inference every N frames (default: 1 = every frame). '
+                    'Display still updates every frame; only inference is skipped.',
+                    default=1, type=int)
 
 args = parser.parse_args()
-
 
 # Parse user inputs
 model_path = args.model
 img_source = args.source
-min_thresh = args.thresh
+min_thresh = float(args.thresh)
 user_res = args.resolution
 record = args.record
+frame_skip = max(1, args.skip)
 
 # Check if model file exists and is valid
-if (not os.path.exists(model_path)):
+if not os.path.exists(model_path):
     print('ERROR: Model path is invalid or model was not found. Make sure the model filename was entered correctly.')
     sys.exit(0)
 
-# Load the model into memory and get labemap
+# Load the model into memory and get labelmap
 model = YOLO(model_path, task='detect')
 labels = model.names
 
@@ -81,20 +113,21 @@ if user_res:
 
 # Check if recording is valid and set up recording
 if record:
-    if source_type not in ['video','usb']:
+    if source_type not in ['video', 'usb']:
         print('Recording only works for video and camera sources. Please try again.')
         sys.exit(0)
     if not user_res:
         print('Please specify resolution to record video at.')
         sys.exit(0)
-    
-    # Set up recording
     record_name = 'demo1.avi'
     record_fps = 30
-    recorder = cv2.VideoWriter(record_name, cv2.VideoWriter_fourcc(*'MJPG'), record_fps, (resW,resH))
+    recorder = cv2.VideoWriter(record_name, cv2.VideoWriter_fourcc(*'MJPG'), record_fps, (resW, resH))
 
-# ===== Initialize config + FSM ====
-cfg = load_config('config/config.example.json')
+# ===== Initialize config + FSM =====
+from pathlib import Path
+
+cfg_path = Path(__file__).parent / "config" / "config.example.json"
+cfg = load_config(cfg_path)
 act = Actuator()
 act.open()
 
@@ -107,27 +140,7 @@ fsm = FeederFSM(
     detection_distance_m=float(cfg.radar.detection_distance_m),
 )
 
-# start in enabled mode by default (set to 0/False to disable)
 feeder_enabled = True
-
-# For testing without BLE, add keyboard control
-import threading
-import keyboard  # pip install keyboard
-
-def keyboard_control():
-    global feeder_enabled
-    while True:
-        if keyboard.is_pressed('e'):
-            feeder_enabled = True
-            print("[CONTROL] Feeder ENABLED")
-            time.sleep(0.5)  # debounce
-        elif keyboard.is_pressed('d'):
-            feeder_enabled = False
-            print("[CONTROL] Feeder DISABLED")
-            time.sleep(0.5)  # debounce
-
-# Start keyboard thread
-threading.Thread(target=keyboard_control, daemon=True).start()
 
 # Load or initialize image source
 if source_type == 'image':
@@ -139,26 +152,40 @@ elif source_type == 'folder':
         _, file_ext = os.path.splitext(file)
         if file_ext in img_ext_list:
             imgs_list.append(file)
-elif source_type == 'video' or source_type == 'usb':
-
-    if source_type == 'video': cap_arg = img_source
-    elif source_type == 'usb': cap_arg = usb_idx
+elif source_type in ('video', 'usb'):
+    cap_arg = img_source if source_type == 'video' else usb_idx
     cap = cv2.VideoCapture(cap_arg)
-
-    # Set camera or video resolution if specified by user
     if user_res:
-        ret = cap.set(3, resW)
-        ret = cap.set(4, resH)
+        cap.set(3, resW)
+        cap.set(4, resH)
 
 elif source_type == 'picamera':
     from picamera2 import Picamera2
-    cap = Picamera2()
-    cap.configure(cap.create_video_configuration(main={"format": 'XRGB8888', "size": (resW, resH)}))
-    cap.start()
 
-# Set bounding box colors (using the Tableu 10 color scheme)
+    cap = Picamera2()
+
+    if user_res:
+        cap.configure(
+            cap.create_video_configuration(
+                main={"format": "XRGB8888", "size": (resW, resH)}
+            )
+        )
+    else:
+        resW, resH = 640, 480
+        cap.configure(
+            cap.create_video_configuration(
+                main={"format": "XRGB8888", "size": (resW, resH)}
+            )
+        )
+
+    cap.start()
+    # Start the threaded grabber — this is the key framerate improvement
+    grabber = PiCameraGrabber(cap)
+    print(f'[CAMERA] Threaded PiCamera grabber started at {resW}x{resH}')
+
+# Bounding box colors (Tableau 10)
 bbox_colors = [(164,120,87), (68,148,228), (93,97,209), (178,182,133), (88,159,106), 
-              (96,202,231), (159,124,168), (169,162,241), (98,118,150), (172,176,184)]
+               (96,202,231), (159,124,168), (169,162,241), (98,118,150), (172,176,184)]
 
 # Initialize control and status variables
 avg_frame_rate = 0
@@ -168,172 +195,195 @@ img_count = 0
 selected_class_ids = [21]
 detection_count = 0
 
+# Frame skip counter — tracks which frames get full inference
+frame_index = 0
+
+# Cache last inference results so skipped frames still show boxes
+last_detections = []     # list of (xmin, ymin, xmax, ymax, classidx, conf)
+last_object_count = 0
+
+# Staleness: clear cached boxes if no detection for this many seconds.
+# Prevents ghost boxes from lingering after the bear leaves the frame.
+last_detection_time = 0.0
+DETECTION_STALE_S = 0.5
+
 # In-memory vision tracker for motion calculation
 vision_tracker = VisionTracker()
 
 
 def _send_vision_to_fsm(det, motion_magnitude):
-    """Bridge from YOLO to FSM by calling fsm.tick in-process."""
-    # Determine perceived threat based on motion filter
+    """Bridge from YOLO to FSM."""
     is_threat = motion_magnitude >= float(cfg.vision.motion_threshold)
-
-    # Optionally set radar_distance_m if using a distance sensor
-    radar_distance_m = None
-
     fsm.tick(
         enable=feeder_enabled,
         threat=is_threat,
         motion_magnitude=motion_magnitude,
-        radar_distance_m=radar_distance_m,
+        radar_distance_m=None,
         now=time.monotonic(),
     )
-
     print(
         f"[VISION] id={det.detection_id} motion={motion_magnitude:.2f} threat={is_threat} "
         f"fsm_state={fsm.state.name if hasattr(fsm.state, 'name') else fsm.state}"
     )
 
 
-# Begin inference loop
+# ===== Main inference loop =====
 while True:
 
     t_start = time.perf_counter()
 
-    # Load frame from image source
-    if source_type == 'image' or source_type == 'folder': # If source is image or image folder, load the image using its filename
+    # --- Grab frame from source ---
+    if source_type in ('image', 'folder'):
         if img_count >= len(imgs_list):
             print('All images have been processed. Exiting program.')
             sys.exit(0)
-        img_filename = imgs_list[img_count]
-        frame = cv2.imread(img_filename)
-        img_count = img_count + 1
-    
-    elif source_type == 'video': # If source is a video, load next frame from video file
+        frame = cv2.imread(imgs_list[img_count])
+        img_count += 1
+
+    elif source_type == 'video':
         ret, frame = cap.read()
         if not ret:
             print('Reached end of the video file. Exiting program.')
             break
-    
-    elif source_type == 'usb': # If source is a USB camera, grab frame from camera
+
+    elif source_type == 'usb':
         ret, frame = cap.read()
-        if (frame is None) or (not ret):
-            print('Unable to read frames from the camera. This indicates the camera is disconnected or not working. Exiting program.')
+        if frame is None or not ret:
+            print('Unable to read frames from the camera. Exiting program.')
             break
 
-    elif source_type == 'picamera': # If source is a Picamera, grab frames using picamera interface
-        frame_bgra = cap.capture_array()
-        frame = cv2.cvtColor(np.copy(frame_bgra), cv2.COLOR_BGRA2BGR)
-        if (frame is None):
-            print('Unable to read frames from the Picamera. This indicates the camera is disconnected or not working. Exiting program.')
-            break
+    elif source_type == 'picamera':
+        # Non-blocking: always get the latest frame the grabber thread captured
+        frame = grabber.get()
+        if frame is None:
+            time.sleep(0.005)
+            continue
 
-    # Resize frame to desired display resolution
-    if resize == True:
-        frame = cv2.resize(frame,(resW,resH))
+    # Resize to display resolution if requested
+    if resize:
+        frame = cv2.resize(frame, (resW, resH))
 
-    # Run inference on frame and filter out undesired detections
-    results = model(frame,classes=selected_class_ids, verbose=False)
+    # --- Inference (every frame_skip frames) ---
+    run_inference = (frame_index % frame_skip == 0)
+    frame_index += 1
 
-    # Extract results
-    detections = results[0].boxes
+    if run_inference:
+        # No imgsz override — let YOLOv8 use its native 640 for best accuracy.
+        # Passing imgsz=320 on a 320x240 source was double-downscaling and
+        # hurting detection quality with no real speed benefit at this resolution.
+        results = model(frame, classes=selected_class_ids, verbose=False)
+        detections = results[0].boxes
 
-    # Initialize variable for basic object counting example
-    object_count = 0
+        last_detections = []
+        last_object_count = 0
 
-    # Go through each detection and get bbox coords, confidence, and class
-    for i in range(len(detections)):
+        for i in range(len(detections)):
+            detection_count += 1
 
-        detection_count = detection_count + 1
-        # Get bounding box coordinates
-        # Ultralytics returns results in Tensor format, which have to be converted to a regular Python array
-        xyxy_tensor = detections[i].xyxy.cpu() # Detections in Tensor format in CPU memory
-        xyxy = xyxy_tensor.numpy().squeeze() # Convert tensors to Numpy array
-        xmin, ymin, xmax, ymax = xyxy.astype(int) # Extract individual coordinates and convert to int
+            xyxy_tensor = detections[i].xyxy.cpu()
+            xyxy = xyxy_tensor.numpy().squeeze()
+            xmin, ymin, xmax, ymax = xyxy.astype(int)
 
-        # Build in-memory YOLO output block for parser (no file required)
-        yolo_block = (
-            f"Detection number: {detection_count}\n"
-            f"Time: {time.perf_counter()}\n"
-            f"Xmin = {xmin}\n"
-            f"Xmax = {xmax}\n"
-            f"Ymin = {ymin}\n"
-            f"Ymax = {ymax}\n"
+            classidx = int(detections[i].cls.item())
+            conf = detections[i].conf.item()
+
+            # Cache for skipped frames
+            last_detections.append((xmin, ymin, xmax, ymax, classidx, conf))
+
+            if conf > min_thresh:
+                last_object_count += 1
+
+            # Build detection block and send to FSM (only on inference frames)
+            yolo_block = (
+                f"Detection number: {detection_count}\n"
+                f"Time: {time.perf_counter()}\n"
+                f"Xmin = {xmin}\n"
+                f"Xmax = {xmax}\n"
+                f"Ymin = {ymin}\n"
+                f"Ymax = {ymax}\n"
+            )
+            det = vision_tracker.parse_yolo_output(yolo_block)
+            if det is not None:
+                motion = vision_tracker.compute_motion(det)
+                _send_vision_to_fsm(det, motion)
+
+        if last_detections:
+            # At least one detection — update freshness timestamp
+            last_detection_time = time.perf_counter()
+        else:
+            # No bear found — tell tracker to count this as a lost frame
+            vision_tracker.mark_no_detection()
+
+        # Status line prints every inference frame so you can confirm
+        # the model is running even when the bear isn't visible/moving
+        print(
+            f"[FRAME {frame_index}] objects={last_object_count} "
+            f"fsm={fsm.state.name} "
+            f"motion={vision_tracker._last_motion:.1f} "
+            f"fps={avg_frame_rate:.1f}"
         )
 
-        # Parse this from the in-memory block
-        det = vision_tracker.parse_yolo_output(yolo_block)
-        if det is not None:
-            motion = vision_tracker.compute_motion(det)
-            _send_vision_to_fsm(det, motion)
+    # --- Draw cached detections on every frame ---
+    # Only draw if the cached boxes are still fresh (within DETECTION_STALE_S).
+    # This prevents ghost boxes from lingering after the bear leaves the frame.
+    boxes_are_fresh = (time.perf_counter() - last_detection_time) < DETECTION_STALE_S
+    object_count = 0
+    if boxes_are_fresh:
+        for (xmin, ymin, xmax, ymax, classidx, conf) in last_detections:
+            if conf > min_thresh:
+                classname = labels[classidx]
+                color = bbox_colors[classidx % 10]
+                cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 2)
+                label = f'{classname}: {int(conf*100)}%'
+                labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                label_ymin = max(ymin, labelSize[1] + 10)
+                cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10),
+                              (xmin+labelSize[0], label_ymin+baseLine-10), color, cv2.FILLED)
+                cv2.putText(frame, label, (xmin, label_ymin-7),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                object_count += 1
 
-        # Optionally keep writing to output.txt for audit/debug (legacy behavior)
-        with open('output.txt', 'a') as file:
-            file.write(yolo_block)
+    # --- Draw HUD ---
+    if source_type in ('video', 'usb', 'picamera'):
+        cv2.putText(frame, f'FPS: {avg_frame_rate:0.2f}', (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 255, 255), 2)
+    cv2.putText(frame, f'Objects: {object_count}', (10, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 255, 255), 2)
+    cv2.putText(frame, f'FSM: {fsm.state.name}', (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, .7, (0, 255, 255), 2)
+    cv2.imshow('YOLO detection results', frame)
+    if record:
+        recorder.write(frame)
 
-        # Get bounding box class ID and name
-        classidx = int(detections[i].cls.item())
-        classname = labels[classidx]
-
-        # Get bounding box confidence
-        conf = detections[i].conf.item()
-
-        # Draw box if confidence threshold is high enough
-        if conf > 0.5:
-
-            color = bbox_colors[classidx % 10]
-            cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), color, 2)
-
-            label = f'{classname}: {int(conf*100)}%'
-            labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1) # Get font size
-            label_ymin = max(ymin, labelSize[1] + 10) # Make sure not to draw label too close to top of window
-            cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10), (xmin+labelSize[0], label_ymin+baseLine-10), color, cv2.FILLED) # Draw white box to put label text in
-            cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1) # Draw label text
-
-            # Basic example: count the number of objects in the image
-            object_count = object_count + 1
-
-    # Calculate and draw framerate (if using video, USB, or Picamera source)
-    if source_type == 'video' or source_type == 'usb' or source_type == 'picamera':
-        cv2.putText(frame, f'FPS: {avg_frame_rate:0.2f}', (10,20), cv2.FONT_HERSHEY_SIMPLEX, .7, (0,255,255), 2) # Draw framerate
-    
-    # Display detection results
-    cv2.putText(frame, f'Number of objects: {object_count}', (10,40), cv2.FONT_HERSHEY_SIMPLEX, .7, (0,255,255), 2) # Draw total number of detected objects
-    cv2.imshow('YOLO detection results',frame) # Display image
-    if record: recorder.write(frame)
-
-    # If inferencing on individual images, wait for user keypress before moving to next image. Otherwise, wait 5ms before moving to next frame.
-    if source_type == 'image' or source_type == 'folder':
+    # Key handling
+    if source_type in ('image', 'folder'):
         key = cv2.waitKey()
-    elif source_type == 'video' or source_type == 'usb' or source_type == 'picamera':
-        key = cv2.waitKey(5)
-    
-    if key == ord('q') or key == ord('Q'): # Press 'q' to quit
-        break
-    elif key == ord('s') or key == ord('S'): # Press 's' to pause inference
-        cv2.waitKey()
-    elif key == ord('p') or key == ord('P'): # Press 'p' to save a picture of results on this frame
-        cv2.imwrite('capture.png',frame)
-    
-    # Calculate FPS for this frame
-    t_stop = time.perf_counter()
-    frame_rate_calc = float(1/(t_stop - t_start))
-
-    # Append FPS result to frame_rate_buffer (for finding average FPS over multiple frames)
-    if len(frame_rate_buffer) >= fps_avg_len:
-        temp = frame_rate_buffer.pop(0)
-        frame_rate_buffer.append(frame_rate_calc)
     else:
-        frame_rate_buffer.append(frame_rate_calc)
+        key = cv2.waitKey(1)
 
-    # Calculate average FPS for past frames
+    if key == ord('q') or key == ord('Q'):
+        break
+    elif key == ord('s') or key == ord('S'):
+        cv2.waitKey()
+    elif key == ord('p') or key == ord('P'):
+        cv2.imwrite('capture.png', frame)
+
+    # FPS calculation
+    t_stop = time.perf_counter()
+    frame_rate_calc = float(1 / (t_stop - t_start))
+    if len(frame_rate_buffer) >= fps_avg_len:
+        frame_rate_buffer.pop(0)
+    frame_rate_buffer.append(frame_rate_calc)
     avg_frame_rate = np.mean(frame_rate_buffer)
 
 
-# Clean up
+# ===== Clean up =====
 print(f'Average pipeline FPS: {avg_frame_rate:.2f}')
-if source_type == 'video' or source_type == 'usb':
+if source_type in ('video', 'usb'):
     cap.release()
 elif source_type == 'picamera':
+    grabber.stop()
     cap.stop()
-if record: recorder.release()
+if record:
+    recorder.release()
 cv2.destroyAllWindows()
