@@ -1,33 +1,30 @@
-attr==0.3.2
-ConfigParser==7.2.0
-cryptography==46.0.6
-Cython==3.2.4
-dbus_python==1.4.0
-dl==0.1.0
-docutils==0.22.4
-filelock==3.25.2
-HTMLParser==0.0.2
-importlib_resources==6.5.2
-inflect==7.3.1
-ini2toml==0.15
-ipython==9.12.0
-ipywidgets==8.1.8
-jnius==1.1.0
-keyring==25.7.0
-lgpio==0.2.2.0
-path.py==12.5.0
-protobuf==7.34.1
-pyOpenSSL==25.0.0
-pyOpenSSL==26.0.0
+# Polar Feeder — pip requirements
+# =============================================================================
+# Install system dependencies first (see README.md):
+# sudo apt install python3-picamera2 python3-libcamera python3-lgpio python3-gpiod
+#
+# Then create your venv WITH system site packages:
+# python3 -m venv .venv --system-site-packages
+# source .venv/bin/activate
+# pip install -r requirements.txt
+# =============================================================================
+
+# Core vision + inference
+ultralytics==8.3.0
+opencv-python==4.11.0.86
+numpy==1.26.4
+
+# Serial communication (radar board)
 pyserial==3.5
-pytest==9.0.2
-redis==7.4.0
-roboflow==1.2.16
-simplejson==3.20.2
-Sphinx==9.1.0
-thread==2.0.6
-trove_classifiers==2026.1.14.14
-typing_extensions==4.15.0
-urllib3_secure_extra==0.1.0
-xmlrpclib==1.0.1
-xx==3.3.2
+
+# BLE interface (Android app <-> Pi)
+bluezero==0.9.1
+
+# GPIO (RF transmitter on GPIO17)
+lgpio==0.2.2.0
+
+# Utilities
+python-dotenv==1.0.1
+
+# Development / Testing (optional)
+pytest==7.4.2
