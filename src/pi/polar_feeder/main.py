@@ -89,6 +89,8 @@ def main() -> int:
             "enable_armed_at": 0.0,
             "vision_motion": 0.0,
             "fused_threat": 0,
+            "radar_distance_m": None,      # ← add this
+            "radar_fused_threat": False,   # ← add this
         }
 
         # ===== CAMERA THREAD STATE =====
@@ -218,22 +220,58 @@ def main() -> int:
                     runtime["vision_motion"] = motion
 
                     # Determine threat and tick FSM
-                    is_threat = motion >= float(cfg.vision.motion_threshold)
+                    # Fuse vision threat with radar threat from main loop
+                    is_vision_threat = motion >= float(cfg.vision.motion_threshold)
+                    is_radar_threat = runtime["radar_fused_threat"]
+                    is_threat = is_vision_threat or is_radar_threat
+                    radar_dist = runtime["radar_distance_m"]
+
+                    prev_state = fsm.state.name
                     fsm.tick(
                         enable=bool(runtime["enable"]),
                         threat=is_threat,
                         motion_magnitude=motion,
-                        radar_distance_m=None,  # radar handled in main loop
+                        radar_distance_m=radar_dist,
                         now=time.monotonic(),
                     )
+                    new_state = fsm.state.name
 
                     obj_count = len(detections)
+                    radar_str = f"{radar_dist:.2f}m" if radar_dist is not None else "None"
                     print(
                         f"[CAMERA] frame={frame_index} objects={obj_count} "
-                        f"motion={motion:.1f} threat={is_threat} "
-                        f"fsm={fsm.state.name}",
+                        f"motion={motion:.1f} vision_threat={is_vision_threat} "
+                        f"radar_threat={is_radar_threat} radar_dist={radar_str} "
+                        f"fsm={new_state}",
                         flush=True,
                     )
+
+                    # Log FSM state transitions
+                    if new_state != prev_state:
+                        print(f"[FSM] {prev_state} -> {new_state}", flush=True)
+                        logger.log_event(
+                            state=new_state,
+                            enable_flag=runtime["enable"],
+                            command="FSM_TRANSITION",
+                            result=f"{prev_state}->{new_state}",
+                            notes=(
+                                f"motion={motion:.1f} vision_threat={is_vision_threat} "
+                                f"radar_threat={is_radar_threat} radar_dist={radar_str}"
+                            ),
+                            radar_enabled=runtime["radar_enabled"],
+                            radar_zone=runtime["radar_last_bin"],
+                        )
+
+                    # Log telemetry every 10 inference frames
+                    if frame_index % 20 == 0:
+                        logger.log_telemetry(
+                            state=new_state,
+                            enable_flag=runtime["enable"],
+                            stillness_raw=motion,
+                            stillness_filtered=motion,
+                            radar_enabled=runtime["radar_enabled"],
+                            radar_zone=radar_str,
+                        )
 
             except Exception as e:
                 import traceback
@@ -525,16 +563,7 @@ def main() -> int:
                         if sensor_fusion:
                             sensor_fusion.update_radar(rr.timestamp)
 
-                # Debug: always show latest radar reading regardless of gate
-                if radar:
-                    rr_debug = radar.get_latest()
-                    if rr_debug.valid:
-                        print(
-                            f"[RADAR] dist={rr_debug.distance_m:.2f}m "
-                            f"bin={rr_debug.bin_index} threat={rr_debug.threat} "
-                            f"seq={rr_debug.seq} allowed={radar_allowed}",
-                            flush=True,
-                        )
+
 
                 # Sensor fusion (radar + vision)
                 # Note: camera thread ticks FSM for vision; main loop handles radar-only tick
@@ -545,6 +574,15 @@ def main() -> int:
                 if sensor_fusion:
                     fused_threat = sensor_fusion.fused_threat(threat, motion_magnitude, radar_distance_m)
                     runtime["fused_threat"] = int(fused_threat)
+                    runtime["radar_fused_threat"] = bool(fused_threat)
+
+                # Always update radar distance from latest reading so camera thread
+                # gets fresh distance data even when radar_allowed gate is closed
+                if radar:
+                    rr_latest = radar.get_latest()
+                    if rr_latest.valid:
+                        runtime["radar_distance_m"] = rr_latest.distance_m
+                        runtime["radar_threat"] = int(rr_latest.threat)
 
                 # Only tick FSM from main loop when camera thread is NOT running,
                 # to avoid double-ticking which can cause state machine race conditions.
@@ -559,8 +597,6 @@ def main() -> int:
 
                 # Track FSM state changes for logging
                 new_state = getattr(fsm.state, "name", str(fsm.state))
-                if new_state != runtime["feeder_state"]:
-                    print(f"[FSM] {runtime['feeder_state']} -> {new_state}", flush=True)
                 runtime["feeder_state"] = new_state
                 runtime["radar_last_bin"] = radar_zone
                 runtime["radar_threat"] = int(threat)
