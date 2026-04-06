@@ -125,7 +125,19 @@ class FeederFSM:
         # Flag to track if we've extended the lure in this IDLE period
         # Prevents multiple extends during a single enable period
         self._lure_extended_once = False
-
+    def _set_state(self, s: State, deadline=None):
+        """
+        Internal method to transition to a new state.
+        
+        This is the single point of state transition, ensuring consistency across the FSM.
+        
+        Args:
+            s: The new State to transition to
+            deadline: Optional float (from time.monotonic()) when this state should transition to the next.
+                     If None, no automatic deadline-based transition will occur.
+        """
+        self.state = s
+        self._deadline = deadline
     def _adaptive_motion_threshold(self, radar_distance_m: float | None) -> float:
         """
         Calculate distance-adaptive motion threshold.
@@ -169,8 +181,6 @@ class FeederFSM:
         adaptive_threshold = self.base_motion_threshold - (progress * threshold_range)
         
         return max(adaptive_threshold, self.base_motion_threshold * 0.2)  # Never go below minimum
-        self.state = s
-        self._deadline = deadline
 
     def tick(self, enable: bool, threat: bool, motion_magnitude: float | None = None, radar_distance_m: float | None = None, now: float | None = None):
         """
