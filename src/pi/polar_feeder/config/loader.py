@@ -1,3 +1,17 @@
+"""Configuration loader for the Polar Feeder application.
+
+This module converts a JSON config file into type-safe dataclasses with validation.
+It ensures missing keys are reported clearly and numeric ranges are clamped to safe values.
+
+Config class hierarchy:
+  - StillnessConfig: stillness sensor thresholds and publish cadence
+  - LoggingConfig: telemetry/event logging behavior
+  - RadarConfig: threat sensor connection and sensitivity
+  - SafetyConfig: safety features (e.g., BLE disconnect behavior)
+  - ActuatorConfig: motion control timing parameters
+  - AppConfig: root config object carrying all sub-configs
+"""
+
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +41,7 @@ class RadarConfig:
     timeout_s: float
     zone_m: list[float]
     distance_jump_m: float
+    detection_distance_m: float
 
 
 @dataclass(frozen=True)
@@ -38,6 +53,14 @@ class SafetyConfig:
 class ActuatorConfig:
     retract_delay_ms: int
     pulse_ms: int
+    feeding_distance_m: float
+
+
+@dataclass(frozen=True)
+class VisionConfig:
+    enabled: bool
+    motion_threshold: float
+    sync_window_s: float
 
 
 @dataclass(frozen=True)
@@ -47,21 +70,25 @@ class AppConfig:
     radar: RadarConfig
     safety: SafetyConfig
     actuator: ActuatorConfig
+    vision: VisionConfig
 
 
 def _require(d: Dict[str, Any], key: str) -> Any:
+    """Return d[key] or raise ValueError with clear message."""
     if key not in d:
         raise ValueError(f"Missing required config key: {key}")
     return d[key]
 
 
 def _clamp_num(name: str, val: float, lo: float, hi: float) -> float:
+    """Validate that val is within [lo, hi] inclusive else raise ValueError."""
     if not (lo <= val <= hi):
         raise ValueError(f"{name} out of range [{lo}, {hi}]: {val}")
     return val
 
 
 def load_config(config_path: str) -> AppConfig:
+    """Load JSON config and return AppConfig with validated values."""
     p = Path(config_path)
     raw = json.loads(p.read_text(encoding="utf-8"))
 
@@ -70,6 +97,7 @@ def load_config(config_path: str) -> AppConfig:
     radar = _require(raw, "radar")
     safety = _require(raw, "safety")
     act = _require(raw, "actuator")
+    vision = _require(raw, "vision")
 
     stillness = StillnessConfig(
         publish_hz=_clamp_num("stillness.publish_hz", float(_require(still, "publish_hz")), 1, 30),
@@ -96,6 +124,12 @@ def load_config(config_path: str) -> AppConfig:
             0.01,
             5.0,
         ),
+        detection_distance_m=_clamp_num(
+            "radar.detection_distance_m",
+            float(_require(radar, "detection_distance_m")),
+            0.5,
+            50.0,
+        ),
     )
 
     safety_cfg = SafetyConfig(
@@ -105,6 +139,13 @@ def load_config(config_path: str) -> AppConfig:
     actuator_cfg = ActuatorConfig(
         retract_delay_ms=int(_clamp_num("actuator.retract_delay_ms", float(_require(act, "retract_delay_ms")), 0, 3000)),
         pulse_ms=int(_clamp_num("actuator.pulse_ms", float(_require(act, "pulse_ms")), 50, 1000)),
+        feeding_distance_m=_clamp_num("actuator.feeding_distance_m", float(_require(act, "feeding_distance_m")), 0.1, 5.0),
+    )
+
+    vision_cfg = VisionConfig(
+        enabled=bool(_require(vision, "enabled")),
+        motion_threshold=_clamp_num("vision.motion_threshold", float(_require(vision, "motion_threshold")), 0.0, 1000.0),
+        sync_window_s=_clamp_num("vision.sync_window_s", float(_require(vision, "sync_window_s")), 0.1, 5.0),
     )
 
     return AppConfig(
@@ -113,4 +154,5 @@ def load_config(config_path: str) -> AppConfig:
         radar=radar_cfg,
         safety=safety_cfg,
         actuator=actuator_cfg,
+        vision=vision_cfg,
     )
