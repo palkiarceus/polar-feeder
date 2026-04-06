@@ -12,7 +12,7 @@
   },
   "radar": {
     "enabled": true,
-    "port": "/dev/ttyAMA0",
+    "port": "/dev/ttyACM0",
     "baud": 115200,
     "timeout_s": 0.1,
     "zone_m": [1.0, 2.0, 3.0],
@@ -20,7 +20,7 @@
     "detection_distance_m": 3.0
   },
   "safety": {
-    "ble_disconnect_safe_idle": true
+    "ble_disconnect_safe_idle": false
   },
   "actuator": {
     "retract_delay_ms": 2500,
