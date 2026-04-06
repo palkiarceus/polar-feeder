@@ -16,13 +16,20 @@
     "baud": 115200,
     "timeout_s": 0.1,
     "zone_m": [1.0, 2.0, 3.0],
-    "distance_jump_m": 0.20
+    "distance_jump_m": 0.20,
+    "detection_distance_m": 3.0
   },
   "safety": {
     "ble_disconnect_safe_idle": true
   },
   "actuator": {
     "retract_delay_ms": 2500,
-    "pulse_ms": 200
+    "pulse_ms": 200,
+    "feeding_distance_m": 0.5
+  },
+  "vision": {
+    "enabled": true,
+    "motion_threshold": 35.0,
+    "sync_window_s": 0.5
   }
 }

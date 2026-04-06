@@ -31,11 +31,16 @@ import uuid
 from datetime import datetime, UTC
 from pathlib import Path
 import threading
+import subprocess
+import signal
+import os 
+import sys  # Add this line
 
 from polar_feeder.config.loader import load_config
 from polar_feeder.logging.csv_logger import CsvSessionLogger, pick_log_dir
 from polar_feeder.ble_interface import BleServer
 from polar_feeder.radar import RadarReader
+from polar_feeder.vision import VisionTracker, SensorFusion
 
 
 def make_session_id() -> str:
@@ -83,6 +88,8 @@ def main() -> int:
     
     # ===== BLE TEST MODE =====
     # Remote control via Bluetooth with full FSM and logging
+    camera_thread = None
+    vision_active = False
     if args.ble_test:
         # Import actuator/FSM here to avoid dependencies in demo mode
         from polar_feeder.actuator import Actuator
@@ -116,10 +123,17 @@ def main() -> int:
             # Radar and safety
             "radar_enabled": bool(cfg.radar.enabled),
             "ble_disconnect_safe_idle": bool(cfg.safety.ble_disconnect_safe_idle),
+            "detection_distance_m": float(cfg.radar.detection_distance_m),  # Distance threshold to start game
+
+            # Vision parameters (stillness tolerance)
+            "vision_enabled": bool(cfg.vision.enabled),
+            "motion_threshold": float(cfg.vision.motion_threshold),  # Stillness: movement allowed before threat
+            "sync_window_s": float(cfg.vision.sync_window_s),
 
             # Actuator timing parameters
-            "retract_delay_ms": int(cfg.actuator.retract_delay_ms),  # Delay between extend and retract
+            "retract_delay_ms": int(cfg.actuator.retract_delay_ms),  # Delay: time from threat to retraction
             "pulse_ms": int(cfg.actuator.pulse_ms),                   # RF signal pulse duration
+            "feeding_distance_m": float(cfg.actuator.feeding_distance_m),  # Distance for FEEDING state
 
             # Status tracking for monitoring
             "actuator_cmd": "IDLE",
@@ -127,6 +141,8 @@ def main() -> int:
             "radar_last_bin": "",
             "radar_threat": 0,
             "enable_armed_at": 0.0,
+            "vision_motion": 0.0,
+            "fused_threat": 0,
         }
 
         # ===== INITIALIZE ACTUATOR AND FSM =====
@@ -140,6 +156,9 @@ def main() -> int:
             actuator=act,
             retract_delay_ms=runtime["retract_delay_ms"],
             cooldown_s=COOLDOWN_S,
+            motion_threshold=cfg.vision.motion_threshold,
+            feeding_distance_m=cfg.actuator.feeding_distance_m,
+            detection_distance_m=cfg.radar.detection_distance_m,
         )
 
         # ===== INITIALIZE BLE SERVER =====
@@ -159,25 +178,110 @@ def main() -> int:
             radar.start()
             print(f"[RADAR] started on {cfg.radar.port}", flush=True)
             
-        # ===== BLE COMMAND HANDLER =====
+        # ===== INITIALIZE VISION (OPTIONAL) =====
+        # Set up vision tracking and sensor fusion if enabled in config
+        vision_tracker = None
+        sensor_fusion = None
+        if cfg.vision.enabled:
+            vision_tracker = VisionTracker()
+            sensor_fusion = SensorFusion(
+                motion_threshold=cfg.vision.motion_threshold
+            )
+            print(f"[VISION] initialized with motion_threshold={cfg.vision.motion_threshold}", flush=True)
+        # At the top of the BLE test section, add these variables (around line 175-180)
+        camera = None
+        camera_thread = None
+        vision_active = False
+        # Add these variables near the top of the BLE test section (around line 175)
+        camera_running = False
+        fsm_autonomous = False
+        camera_process = None
+        def process_camera_frames(picam2):
+            """Background thread to process camera frames and detect threats."""
+            global vision_active
+            while vision_active:
+                try:
+                    # Capture frame
+                    frame = picam2.capture_array()
+            
+                    # Run YOLO inference here (you'll integrate your detection)
+                    # For now, just log that we're capturing
+                    print("[CAMERA] Frame captured", flush=True)
+            
+                    # Control frame rate (e.g., 5 fps to reduce CPU)
+                    time.sleep(0.2)
+                except Exception as e:
+                    print(f"[CAMERA] Error: {e}", flush=True)
+                    break
+                    
+        def camera_loop():
+            """Thread to capture frames from PiCamera2 and update FSM."""
+            global vision_active
+            from picamera2 import Picamera2
+            import cv2
+            from polar_feeder.yolo_detect import detect_frame  # Implement this in yolo_detect.py
+
+            try:
+                picam2 = Picamera2()
+                config = picam2.create_preview_configuration(main={"size": (640,480),"format":"RGB888"})
+                picam2.configure(config)
+                picam2.start()
+                print("[CAMERA] Thread started", flush=True)
+
+                while vision_active:
+                    frame = picam2.capture_array()
+
+                    # Run YOLO detection: returns threat=True/False, motion magnitude float
+                    threat, motion = detect_frame(frame)
+
+                    # Update FSM tick with motion/threat info
+                    fsm.tick(
+                        enable=True,
+                        threat=threat,
+                        motion_magnitude=motion,
+                        radar_distance_m=None,
+                        now=time.monotonic()
+                    )
+
+                    # Update runtime vision motion for STATUS queries
+                    runtime["vision_motion"] = motion
+
+                    # Limit frame rate
+                    time.sleep(0.2)  # ~5 FPS
+
+            except Exception as e:
+                print(f"[CAMERA] Error in camera_loop: {e}", flush=True)
+            finally:
+                print("[CAMERA] Thread stopped", flush=True)
+                            
+        def start_camera():
+            """Initialize and start the PiCamera for vision tracking."""
+            from picamera2 import Picamera2
+            import cv2
+    
+            picam2 = Picamera2()
+            # Configure for preview size (e.g., 640x480 for performance)
+            config = picam2.create_preview_configuration(
+                main={"size": (640, 480), "format": "RGB888"}
+            )
+            picam2.configure(config)
+            picam2.start()
+            return picam2
+        
+        
         # Define the callback function for handling incoming BLE commands
         # This function parses commands and updates the runtime state
+        # Define the callback function for handling incoming BLE commands
         def handle_ble(cmd) -> str:
             """
             BLE command handler - processes incoming commands from BLE clients.
-            
-            Supported Commands:
-            - ENABLE=0/1: Enable/disable the feeder
-            - ACTUATOR=EXTEND/RETRACT: Manually control the arm
-            - THREAT=0/1: Manually trigger threat response
-            - RETRACT_DELAY=<ms>: Change retract delay
-            - [Other params]: Status commands and parameter changes
-            
-            Each command returns an ACK or ERR response.
             """
+            import sys  # Add this import here
+            
+            # Get the current Python executable (from the virtual environment)
+            CURRENT_PYTHON = sys.executable
+            print(f"[DEBUG] Using Python: {CURRENT_PYTHON}", flush=True)
             print(f"[DEBUG] handle_ble raw={cmd.raw!r}", flush=True)
-            print("[DEBUG] act object:", act, "type:", type(act), flush=True)
-            print("[DEBUG] act has extend?", hasattr(act, "extend"), flush=True)
             
             s = cmd.raw.strip()
             if not s:
@@ -185,43 +289,70 @@ def main() -> int:
             s_up = s.upper()
 
             # ===== ENABLE=0/1: Control feeder enable status =====
-            # The main control signal that drives the FSM
             if s_up.startswith("ENABLE="):
+<<<<<<< HEAD
                 val = s.split("=", 1)[1].strip()
                 print("[DEBUG] parsed val =", val, flush=True)
                 if val not in ("0", "1"):
                     return "ERR BAD_VALUE ENABLE"
 
 
+=======
+                val = s.split("=",1)[1].strip()
+>>>>>>> 32b668566db4333924aaec0d4ef2884882a4dae2
                 prev = runtime["enable"]
                 runtime["enable"] = int(val)
 
+                print(f"[DEBUG] ENABLE={val}, cfg.vision.enabled={cfg.vision.enabled}", flush=True)
+
                 if runtime["enable"] == 1:
-                    # Feeder enabled - start timing for telemetry
                     runtime["enable_armed_at"] = time.monotonic()
                     if radar:
-                        radar.reset_baseline()  # Reset threat detection baseline
-                else:
-                    # Feeder disabled - clear timing
-                    runtime["enable_armed_at"] = 0.0
+                        radar.reset_baseline()
 
-                # Log the state change
-                logger.log_event(
-                    state="BLE_TEST",
-                    enable_flag=runtime["enable"],
-                    command="ENABLE",
-                    result=f"{prev}->{runtime['enable']}",
-                    notes="Runtime enable toggle (not persisted)",
-                    radar_enabled=runtime["radar_enabled"],
-                    radar_zone="",
-                )
+                    # Start camera thread using Picamera2
+                    global camera_thread, vision_active
+                    if cfg.vision.enabled and not vision_active:
+                        vision_active = True
+                        camera_thread = threading.Thread(target=camera_loop, daemon=True)
+                        camera_thread.start()
+                        print("[ENABLE] Camera thread started (Picamera2)", flush=True)
+
+                    # Log event
+                    logger.log_event(
+                        state="BLE_TEST",
+                        enable_flag=runtime["enable"],
+                        command="ENABLE",
+                        result=f"{prev}->{runtime['enable']}",
+                        notes="System enabled - camera and FSM active",
+                        radar_enabled=runtime["radar_enabled"],
+                        radar_zone="",
+                    )
+
+                else:  # runtime["enable"] == 0
+                    if vision_active:
+                        vision_active = False
+                        if camera_thread:
+                            camera_thread.join(timeout=1.0)
+                            camera_thread = None
+                        print("[ENABLE] Camera thread stopped", flush=True)
+
+                    # Log event
+                    logger.log_event(
+                        state="BLE_TEST",
+                        enable_flag=runtime["enable"],
+                        command="ENABLE",
+                        result=f"{prev}->{runtime['enable']}",
+                        notes="System disabled - camera and FSM stopped",
+                        radar_enabled=runtime["radar_enabled"],
+                        radar_zone="",
+                    )
+
                 return f"ACK ENABLE={runtime['enable']}"
-            
+
             # ===== ACTUATOR=EXTEND/RETRACT: Manual arm control =====
-            # Direct control of the arm (usually driven by FSM, but can be manual)
             if s_up.startswith("ACTUATOR="):
                 val = s.split("=", 1)[1].strip().upper()
-                print("[DEBUG] entered ACTUATOR branch", flush=True)
                 print("[DEBUG] ACTUATOR cmd ->", val, flush=True)
 
                 if val not in ("EXTEND", "RETRACT"):
@@ -229,25 +360,56 @@ def main() -> int:
 
                 runtime["actuator_cmd"] = val
 
-                print("[DEBUG] about to enter try", flush=True)
                 try:
-                    print("[DEBUG] inside try", flush=True)
                     if val == "EXTEND":
-                        print("[DEBUG] calling act.extend()", flush=True)
                         act.extend()
-                        print("[DEBUG] act.extend() returned", flush=True)
                     else:
-                        print("[DEBUG] calling act.retract()", flush=True)
                         act.retract()
-                        print("[DEBUG] act.retract() returned", flush=True)
                 except Exception as e:
                     import traceback
-                    print("[DEBUG] actuator exception full traceback:\n", traceback.format_exc(), flush=True)
+                    print("[DEBUG] actuator exception:", traceback.format_exc(), flush=True)
                     return f"ERR ACTUATOR_FAIL {type(e).__name__}"
                     
                 return f"ACK ACTUATOR={val}"
             
-            # SET key=value for runtime parameters (not persisted)
+            # ===== RETRACT: Manual retraction from FEEDING state =====
+            if s_up == "RETRACT":
+                success = fsm.manual_retract()
+                if success:
+                    logger.log_event(
+                        state="FEEDING",
+                        enable_flag=runtime["enable"],
+                        command="RETRACT",
+                        result="SUCCESS",
+                        notes="Manual retraction from FEEDING state",
+                        radar_enabled=runtime["radar_enabled"],
+                        radar_zone="",
+                    )
+                    return "ACK RETRACT"
+                else:
+                    return "ERR RETRACT not_in_feeding_state"
+            
+            # ===== VISION=<detection_line>: Process YOLO detection =====
+            if s_up.startswith("VISION="):
+                if not cfg.vision.enabled:
+                    return "ERR VISION_DISABLED"
+                
+                detection_line = s.split("=", 1)[1].strip()
+                try:
+                    det = vision_tracker.parse_line(detection_line)
+                    if det is None:
+                        return "ERR VISION_PARSE_FAILED"
+                    
+                    motion = vision_tracker.compute_motion(det)
+                    sensor_fusion.update_vision(det.timestamp)
+                    
+                    runtime["vision_motion"] = motion
+                    
+                    return f"ACK VISION motion={motion:.2f}"
+                except Exception as e:
+                    return f"ERR VISION_EXCEPTION {type(e).__name__}"
+            
+            # SET key=value for runtime parameters
             if s_up.startswith("SET "):
                 rest = s[4:].strip()
                 if "=" not in rest:
@@ -283,7 +445,6 @@ def main() -> int:
                         if not (0 <= n <= 3000):
                             return "ERR OUT_OF_RANGE retract_delay_ms 0 3000"
                         runtime[key_l] = n
-                        # Update FSM live
                         fsm.retract_delay_s = n / 1000.0
 
                     elif key_l == "pulse_ms":
@@ -291,9 +452,8 @@ def main() -> int:
                         if not (50 <= n <= 1000):
                             return "ERR OUT_OF_RANGE pulse_ms 50 1000"
                         runtime[key_l] = n
-                        # Update actuator pulse default if your actuator supports it
                         try:
-                            act.pulse_s = n / 1000.0  # if your Actuator stores pulse_s
+                            act.pulse_s = n / 1000.0
                         except Exception:
                             pass
 
@@ -343,7 +503,10 @@ def main() -> int:
                 return f"ACK {key_l}={runtime[key_l]}"
 
             if s_up in ("GET STATUS", "STATUS"):
-                # Keep response compact and readable
+                vision_status = ""
+                if cfg.vision.enabled:
+                    vision_status = f" vision_enabled=1 vision_motion={runtime['vision_motion']:.2f} fused_threat={runtime['fused_threat']}"
+                
                 return (
                     "ACK STATUS "
                     f"enable={runtime['enable']} "
@@ -351,6 +514,7 @@ def main() -> int:
                     f"retract_delay_ms={runtime['retract_delay_ms']} "
                     f"pulse_ms={runtime['pulse_ms']} "
                     f"radar_enabled={int(runtime['radar_enabled'])}"
+                    f"{vision_status}"
                 )
 
             return "ERR UNKNOWN_CMD"
@@ -439,9 +603,40 @@ def main() -> int:
                             f"[RADAR] NEW seq={rr.seq} bin={rr.bin_index} dist={rr.distance_m} threat={rr.threat}",
                             flush=True,
                         )
+                        
+                        # Update sensor fusion with radar timestamp
+                        if sensor_fusion:
+                            sensor_fusion.update_radar(rr.timestamp)
 
-                # Tick the state machine
-                fsm.tick(enable=bool(runtime["enable"]), threat=threat)
+                # ===== SENSOR FUSION =====
+                # Combine radar and vision threats
+                fused_threat = threat
+                motion_magnitude = runtime.get("vision_motion", 0.0)
+                radar_distance_m = rr.distance_m if radar and radar_allowed and 'rr' in locals() and rr.valid else None
+                
+                if sensor_fusion:
+                    # Check if sensors are in sync
+                    in_sync = sensor_fusion.in_sync(runtime["sync_window_s"])
+                    if not in_sync:
+                        pass #
+                        # print(f"[FUSION] sensors out of sync", flush=True)
+                    
+                    # Get fused threat decision
+                    fused_threat = sensor_fusion.fused_threat(threat, motion_magnitude)
+                    runtime["fused_threat"] = int(fused_threat)
+                    
+                    if fused_threat and not threat:
+                        print(f"[FUSION] vision motion triggered threat (motion={motion_magnitude:.2f})", flush=True)
+
+                # Tick the state machine with fused threat, motion data, and radar distance
+                now = time.monotonic()
+                fsm.tick(
+                    enable=bool(runtime["enable"]), 
+                    threat=fused_threat,
+                    motion_magnitude=motion_magnitude if cfg.vision.enabled else None,
+                    radar_distance_m=radar_distance_m,
+                    now=now
+                )
 
                 # Report state for STATUS queries
                 new_state = getattr(fsm.state, "name", str(fsm.state))

@@ -1,0 +1,30 @@
+# Polar Feeder — pip requirements
+# =============================================================================
+# Install system dependencies first (see README.md):
+# sudo apt install python3-picamera2 python3-libcamera python3-lgpio python3-gpiod
+#
+# Then create your venv WITH system site packages:
+# python3 -m venv .venv --system-site-packages
+# source .venv/bin/activate
+# pip install -r requirements.txt
+# =============================================================================
+
+# Core vision + inference
+ultralytics==8.3.0
+opencv-python==4.11.0.86
+numpy==1.26.4
+
+# Serial communication (radar board)
+pyserial==3.5
+
+# BLE interface (Android app <-> Pi)
+bluezero==0.9.1
+
+# GPIO (RF transmitter on GPIO17)
+lgpio==0.2.2.0
+
+# Utilities
+python-dotenv==1.0.1
+
+# Development / Testing (optional)
+pytest==7.4.2
