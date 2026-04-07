@@ -13,7 +13,6 @@ Supports two modes:
    - Simulated feeder with random stillness data
    - Tests CSV logging without hardware
 """
-
 import argparse
 import random
 import time
@@ -21,6 +20,7 @@ import uuid
 from datetime import datetime, UTC
 from pathlib import Path
 import threading
+import lgpio
 
 from polar_feeder.config.loader import load_config
 from polar_feeder.logging.csv_logger import CsvSessionLogger, pick_log_dir
@@ -167,7 +167,9 @@ def main() -> int:
                 # Load YOLO model
                 model = YOLO("yolov8n.pt", task="detect")
                 local_tracker = VisionTracker()
-
+                # Initialize GPIO for detection indicator LED (pin 27)
+                led_h = lgpio.gpiochip_open(0)
+                lgpio.gpio_claim_output(led_h, 27)
                 # Initialize camera
                 picam2 = Picamera2()
                 cam_cfg = picam2.create_video_configuration(
@@ -237,6 +239,8 @@ def main() -> int:
                     new_state = fsm.state.name
 
                     obj_count = len(detections)
+                    lgpio.gpio_write(led_h,27,1 if obj_count > 0 else 0)
+                    
                     radar_str = f"{radar_dist:.2f}m" if radar_dist is not None else "None"
                     print(
                         f"[CAMERA] frame={frame_index} objects={obj_count} "
@@ -278,13 +282,20 @@ def main() -> int:
                 print(f"[CAMERA] Error in camera_loop: {e}", flush=True)
                 traceback.print_exc()
             finally:
-                cam_state["active"] = False   # ← ensure flag is cleared even on crash
+                cam_state["active"] = False   # ← ensure flag is cleared even on cr
+            
+                try:
+                    lgpio.gpio_write(led_h, 27, 0)  # turn LED off on exit
+                    lgpio.gpiochip_close(led_h)
+                except Exception:
+                    pass
                 try:
                     picam2.stop()
-                    picam2.close()   # ← this is the critical missing line
+                    picam2.close()
                 except Exception:
                     pass
                 print("[CAMERA] Thread stopped.", flush=True)
+                
 
         # ===== CAMERA START/STOP HELPERS =====
         def start_camera_thread():

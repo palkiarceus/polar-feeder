@@ -231,7 +231,10 @@ class FeederFSM:
             # Check if bear is close enough to feed (bear "wins" scenario)
             if radar_distance_m is not None and radar_distance_m <= self.feeding_distance_m:
                 # Bear is close enough! Let it feed safely
-                self._set_state(State.FEEDING, deadline=None)  # Stay extended indefinitely
+                
+                #COMMENTED OUT FOR TESTING
+                
+                # self._set_state(State.FEEDING, deadline=None)  # Stay extended indefinitely
                 return
 
             # Detection distance check: Only allow threat signals when bear is within detection_distance_m
