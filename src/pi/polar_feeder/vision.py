@@ -151,33 +151,42 @@ class VisionTracker:
         self.last_detection = detection
 
     def compute_motion(self, new_detection: Detection) -> float:
-        """Compute motion score (Euclidean movement of bounding-box center).
+        """Compute motion score combining center displacement AND box size change.
 
-        Returns 0.0 on first detection or after bear was lost for
-        LOST_THRESHOLD frames, to avoid phantom spikes on reacquisition.
-        Returns larger values for faster movement.
+        Center displacement catches lateral/diagonal movement.
+        Box size change catches direct approach toward the camera.
+        Returns the larger of the two so either trigger works independently.
         """
-        # Bear was lost long enough that the last position is stale —
-        # reset baseline so we don't report a huge phantom displacement.
         if self._frames_since_detection >= self.LOST_THRESHOLD:
             self.update(new_detection)
             self._frames_since_detection = 0
             self._last_motion = 0.0
             return 0.0
 
-        # First detection ever
         if self.last_detection is None:
             self.update(new_detection)
             self._frames_since_detection = 0
             self._last_motion = 0.0
             return 0.0
 
+        # --- Component 1: center displacement (lateral/diagonal movement) ---
         old_center = self.last_detection.center()
         new_center = new_detection.center()
-
         dx = new_center[0] - old_center[0]
         dy = new_center[1] - old_center[1]
-        motion = (dx ** 2 + dy ** 2) ** 0.5
+        center_motion = (dx ** 2 + dy ** 2) ** 0.5
+
+        # --- Component 2: box size change (approach toward camera) ---
+        # Use diagonal of bounding box as the size metric — more stable than
+        # area alone since area grows as the square of distance change.
+        old_diag = (self.last_detection.width() ** 2 + self.last_detection.height() ** 2) ** 0.5
+        new_diag = (new_detection.width() ** 2 + new_detection.height() ** 2) ** 0.5
+        size_change = abs(new_diag - old_diag)
+
+        # Take the max so either type of movement independently triggers
+        # the threat threshold. You could also use a weighted sum if you
+        # want both components to contribute simultaneously.
+        motion = max(center_motion, size_change)
 
         self.update(new_detection)
         self._frames_since_detection = 0

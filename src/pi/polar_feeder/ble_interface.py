@@ -311,7 +311,7 @@ class BleServer:
             srv_id=self._srv_id,
             chr_id=self._rx_id,
             uuid=RX_CHAR_UUID,
-            flags=["write", "write-without-response"],
+            flags=["write-without-response"],
             value=_str_to_bytes_list(""),
             notifying=False,
             write_callback=self._on_write_rx,  # Callback triggered when client writes
@@ -330,4 +330,21 @@ class BleServer:
         )
 
         print("BLE Publishing Now", flush=True)
+        # Start a persistent bluetoothctl agent process that stays alive
+        # to handle pairing requests automatically. Must be persistent
+        # (not one-shot with quit) so it responds immediately when Android
+        # initiates pairing at any point after connection.
+        try:
+            self._agent_proc = subprocess.Popen(
+                ["bluetoothctl"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._agent_proc.stdin.write(b"agent NoInputNoOutput\ndefault-agent\n")
+            self._agent_proc.stdin.flush()
+            print("[BLE] Persistent auto-pair agent started", flush=True)
+        except Exception as e:
+            self._agent_proc = None
+            print(f"[BLE] Agent start warning: {e}", flush=True)
         self._p.publish()

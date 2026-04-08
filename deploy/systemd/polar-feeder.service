@@ -1,137 +1,82 @@
 # Systemd Service Unit for Polar Feeder
-# 
-# This unit file configures systemd to manage the Polar Feeder service on a Linux system
-# (Raspberry Pi with Raspberry Pi OS / Raspbian or other systemd-based distros).
 #
 # Installation:
-#   1. Copy this file to: /etc/systemd/system/polar-feeder.service
-#   2. Run: sudo systemctl daemon-reload
-#   3. Enable: sudo systemctl enable polar-feeder
-#   4. Start: sudo systemctl start polar-feeder
-#   5. Check status: sudo systemctl status polar-feeder
+#   1. sudo cp polar-feeder.service /etc/systemd/system/
+#   2. sudo systemctl daemon-reload
+#   3. sudo systemctl enable polar-feeder
+#   4. sudo systemctl start polar-feeder
 #
 # Service Logs:
-#   - View: journalctl -u polar-feeder -n 50 -f
-#   - Full: journalctl -u polar-feeder --no-pager | less
+#   journalctl -u polar-feeder -n 50 -f
 #
-# Requires:
-#   - Working Bluetooth service (bluetoothd)
-#   - Network connectivity (if logging to remote services)
-#   - Proper GPIO permissions for user 'arcticproject'
-#   - All dependencies installed (bleak, bluezero, lgpio, etc.)
-#
-# Design:
-#   - Automatically starts after Bluetooth is ready
-#   - Restarts on failure with 2-second delay to prevent CPU thrashing
-#   - Runs as 'arcticproject' user (non-root for security)
-#   - Pre-startup GPIO initialization (pins 17, 27) set to output, pull-down
-#   - Captures stdout/stderr to systemd journal for centralized logging
+# To manually restart:
+#   sudo systemctl restart polar-feeder
 
 [Unit]
-# [Unit] section - Service metadata and dependency ordering
-
-# Human-readable description shown in systemctl status and logs
 Description=Polar Feeder BLE Controller
+Documentation=https://github.com/palkiarceus/polar-feeder
 
-# Start this service AFTER these targets are reached:
-# network.target = basic network is available
-# bluetooth.target = Bluetooth service (bluetoothd) is running
-# Order matters: we wait for both to be ready before starting
-After=network.target bluetooth.target
+# Wait for bluetooth daemon AND the actual HCI adapter to be present.
+# bluetooth.target = bluetoothd is running
+# sys-subsystem-bluetooth-devices-hci0.device = the physical BT adapter is enumerated
+# Without the device dependency, bluetoothd may be "running" but the adapter
+# isn't ready yet, causing BLE advertisement to fail silently.
+After=network.target bluetooth.target sys-subsystem-bluetooth-devices-hci0.device
 
-# Wants=bluetooth.target means: if bluetooth fails, we'll still try to start (soft dependency)
-# This is useful because the feeder can operate in degraded mode (GPIO/RF control without BLE)
-Wants=bluetooth.target
+# Requires bluetooth.service as a hard dependency (not just Wants).
+# If bluetooth fails, we fail too rather than starting with no BLE.
+Requires=bluetooth.service
+
 
 [Service]
-# [Service] section - Execution parameters
-
-# Type=simple means: systemd considers service started when ExecStart process is launched
-# (vs Type=forking which waits for child process to detach)
-# Our Python script runs as long-lived process in foreground, so 'simple' is correct
 Type=simple
-
-# User=arcticproject runs the service as this non-root user
-# This is a security best practice (least privilege principle)
-# User must have GPIO permissions configured via /etc/udev/rules.d/ or similar
 User=arcticproject
-
-# WorkingDirectory sets the initial directory when service starts
-# All relative paths in scripts are resolved relative to this directory
-# This is the project root containing src/, config/, and logs/ directories
 WorkingDirectory=/home/arcticproject/Desktop/polar_bear_project_github/polar-feeder
 
-# Environment variables set for the process
-# PYTHONPATH: Adds src/pi directory so imports like 'from polar_feeder import main' work
-# Without this, Python won't find the package
 Environment=PYTHONPATH=/home/arcticproject/Desktop/polar_bear_project_github/polar-feeder/src/pi
-
-# PYTHONUNBUFFERED=1 disables stdout/stderr buffering
-# Important: ensures log messages appear immediately in journalctl (no buffering delays)
 Environment=PYTHONUNBUFFERED=1
 
-# StandardOutput=journal redirects stdout to systemd journal
-# This makes all print() statements visible in: journalctl -u polar-feeder
 StandardOutput=journal
-
-# StandardError=journal redirects stderr to systemd journal
-# This makes all exceptions and error messages visible in journalctl
 StandardError=journal
 
-# ExecStartPre runs BEFORE the main service starts (prerequisite setup)
-# Pin initialization commands ensure GPIO is in known state
+# Give the service up to 30 seconds to start before systemd marks it failed.
+# Needed because bluetooth restart + YOLO model load + BLE advertisement
+# can take 10-15 seconds on first boot.
+TimeoutStartSec=30
 
-# Initialize GPIO pin 17 (usually RF transmitter or sensor):
-#   set 17 = configure pin 17
-#   op = set as output (vs 'ip' for input)
-#   dl = pull-down logic (holds pin low when not driven)
+# ===== PRE-START SEQUENCE =====
+# These run in order before the main ExecStart.
+
+# Step 1: Restart bluetooth fresh so the adapter is in a clean state.
+# This is the key fix for needing manual 'sudo systemctl restart bluetooth'
+# every test run. Doing it here means every service start gets a clean BT stack.
+ExecStartPre=/bin/systemctl restart bluetooth.service
+
+# Step 2: Wait for bluetooth to fully initialize after restart.
+# bluetoothctl show will exit 0 only when the adapter is ready.
+# The sleep gives the stack time to settle before we try to advertise.
+ExecStartPre=/bin/sleep 3
+
+# Step 3: Ensure the BT adapter is powered on and discoverable.
+# Some Pi configurations leave the adapter powered off after restart.
+ExecStartPre=/usr/bin/bluetoothctl power on
+ExecStartPre=/usr/bin/bluetoothctl discoverable on
+
+# Step 4: Initialize GPIO pins to known output/pull-down state.
+# Pin 17 = RF transmitter (actuator control)
+# Pin 27 = LED indicator (bear detection)
 ExecStartPre=/usr/bin/pinctrl set 17 op dl
-
-# Initialize GPIO pin 27 (usually RF transmitter or sensor):
-#   Same configuration as pin 17
 ExecStartPre=/usr/bin/pinctrl set 27 op dl
 
-# ExecStart is the main command that runs the service
-# Uses bash -lc to load login shell configuration (.bashrc/.profile)
-# This ensures all environment variables and path setup is complete
-# 'cd /path' enters the project directory before running run.sh
-# 'exec bash run.sh' replaces the bash process with the script
-#   (exec = important for signal handling, ensures SIGTERM propagates correctly)
+# ===== MAIN SERVICE =====
 ExecStart=/bin/bash -lc 'cd /home/arcticproject/Desktop/polar_bear_project_github/polar-feeder && exec bash src/pi/scripts/run.sh --ble-test --config /etc/polar_feeder/config.json'
 
-# Restart policy:
-# on-failure = restart only if process exits with non-zero status
-# (vs 'always' which restarts even on clean shutdown, or 'no' which never restarts)
+# Restart on failure with 5-second delay.
+# Longer than before (was 2s) to give bluetooth time to recover
+# if the crash was BLE-related.
 Restart=on-failure
-
-# RestartSec=2 waits 2 seconds before restarting after failure
-# This prevents rapid restart loops that can overwhelm system resources
-# 2 seconds is short enough for responsive recovery, long enough to avoid thrashing
-RestartSec=2
+RestartSec=5
 
 
 [Install]
-# [Install] section - Tells systemd when/how to automatically start this service
-
-# WantedBy=multi-user.target means:
-# Enable this service to start during boot when reaching the multi-user target
-# (normal login-enabled runlevel for system services)
-# When you run 'systemctl enable polar-feeder', it creates a symlink in:
-#   /etc/systemd/system/multi-user.target.wants/polar-feeder.service
-# This symlink tells systemd to start the service on next boot
 WantedBy=multi-user.target
-
-# Notes on systemd targets:
-# - multi-user.target = normal system runlevel (all services start)
-# - graphical.target = X11/GUI services also start (used on desktop systems)
-# - rescue.target = minimal single-user mode for recovery
-#
-# Common systemctl commands:
-#   systemctl start polar-feeder           = start service now
-#   systemctl stop polar-feeder            = stop service now
-#   systemctl restart polar-feeder         = stop then start
-#   systemctl enable polar-feeder          = start on boot
-#   systemctl disable polar-feeder         = don't start on boot
-#   systemctl status polar-feeder          = show current status
-#   systemctl is-active polar-feeder       = check if running
-#   journalctl -u polar-feeder             = view service logs
