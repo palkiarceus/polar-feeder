@@ -12,15 +12,19 @@ Environment=PYTHONUNBUFFERED=1
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=30
-ExecStartPre=/bin/sleep 2
+ExecStartPre=/usr/bin/bluetoothctl discoverable off
+ExecStartPre=/bin/sleep 1
 ExecStartPre=/usr/bin/bluetoothctl power off
 ExecStartPre=/bin/sleep 1
 ExecStartPre=/usr/bin/bluetoothctl power on
+ExecStartPre=/usr/bin/bluetoothctl pairable on
 ExecStartPre=/usr/bin/bluetoothctl discoverable on
+ExecStartPre=/bin/sleep 1
 ExecStartPre=/usr/bin/pinctrl set 17 op dl
 ExecStartPre=/usr/bin/pinctrl set 27 op dl
 ExecStart=/bin/bash -lc 'cd /home/arcticproject/Desktop/polar_bear_project_github/polar-feeder && exec bash src/pi/scripts/run.sh --ble-test --config /etc/polar_feeder/config.json'
 Restart=on-failure
 RestartSec=5
+
 [Install]
 WantedBy=multi-user.target
