@@ -23,13 +23,13 @@
     "ble_disconnect_safe_idle": false
   },
   "actuator": {
-    "retract_delay_ms": 2500,
+    "retract_delay_ms": 500,
     "pulse_ms": 200,
     "feeding_distance_m": 0.5
   },
   "vision": {
     "enabled": true,
-    "motion_threshold": 35.0,
+    "motion_threshold": 17.0,
     "sync_window_s": 0.5
   }
 }
