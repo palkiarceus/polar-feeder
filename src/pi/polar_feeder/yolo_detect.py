@@ -19,7 +19,7 @@ _model = None
 _vision_tracker = None
 _cfg = None
 
-def init_yolo_for_ble(model_path="yolov8n.pt"):
+def init_yolo_for_ble(model_path="yolo26n.pt.pt"):
     """Initialize YOLO model and vision tracker for BLE mode."""
     global _model, _vision_tracker, _cfg
     if _model is None:
@@ -357,7 +357,7 @@ while True:
             if det is not None:
                 motion = vision_tracker.compute_motion(det)
                 _send_vision_to_fsm(det, motion)
-
+        
         if last_detections:
             # At least one detection — update freshness timestamp
             last_detection_time = time.perf_counter()

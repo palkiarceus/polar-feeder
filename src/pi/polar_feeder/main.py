@@ -3,12 +3,12 @@ Main Entry Point for Polar Feeder Controller
 
 Supports two modes:
 
-1. BLE_TEST Mode (--ble-test):
+1. BLE Mode (--ble-test):
    - Starts a BLE GATT server for remote control via Android app
    - On ENABLE=1: starts camera thread running YOLO + FSM
    - On ENABLE=0: stops camera thread cleanly
    - Logs all events and telemetry to CSV
-   - Supports MODE=LURE (default) and MODE=INVERSE via BLE command
+   - Supports MODE=LURE and MODE=INVERSE via BLE command
 
 2. DEMO Mode (default):
    - Simulated feeder with random stillness data
@@ -53,7 +53,7 @@ def main() -> int:
     print("[PATH] polar_feeder pkg:", polar_feeder.__file__, flush=True)
     print("[PATH] actuator mod:", actmod.__file__, flush=True)
 
-    # ===== BLE TEST MODE =====
+    # ===== BLE MODE =====
     if args.ble_test:
         from polar_feeder.actuator import Actuator
         from polar_feeder.feeder_fsm import FeederFSM
@@ -69,7 +69,7 @@ def main() -> int:
         # ===== RUNTIME STATE =====
         runtime = {
             "enable": 0,
-            "fsm_mode": "INVERSE",           # "LURE" or "INVERSE" — switchable via BLE
+            "fsm_mode": "INVERSE",
             "stillness_threshold": float(cfg.stillness.trigger_threshold),
             "stillness_min_duration_s": float(cfg.stillness.min_duration_s),
             "stillness_publish_hz": float(cfg.stillness.publish_hz),
@@ -94,6 +94,7 @@ def main() -> int:
             "fused_threat": 0,
             "radar_distance_m": None,
             "radar_fused_threat": False,
+            "manual_override_until": 0.0,   # monotonic timestamp; FSM tick suppressed until then
         }
 
         # ===== CAMERA THREAD STATE =====
@@ -108,12 +109,9 @@ def main() -> int:
         act.open()
 
         # ===== FSM FACTORY =====
-        # Creates the appropriate FSM based on current runtime mode.
-        # Called at startup and again on each ENABLE=1 so mode changes
-        # take effect cleanly on the next session.
         def make_fsm():
             if runtime["fsm_mode"] == "INVERSE":
-                print(f"[FSM] Creating INVERSE FSM", flush=True)
+                print("[FSM] Creating INVERSE FSM", flush=True)
                 return InverseFeederFSM(
                     actuator=act,
                     motion_threshold=runtime["motion_threshold"],
@@ -123,7 +121,7 @@ def main() -> int:
                     feeding_distance_m=runtime["feeding_distance_m"],
                 )
             else:
-                print(f"[FSM] Creating LURE FSM", flush=True)
+                print("[FSM] Creating LURE FSM", flush=True)
                 return FeederFSM(
                     actuator=act,
                     retract_delay_ms=runtime["retract_delay_ms"],
@@ -133,14 +131,12 @@ def main() -> int:
                     detection_distance_m=runtime["detection_distance_m"],
                 )
 
-        # Use a list so camera_loop closure can always read the current FSM
-        # even after it gets replaced by make_fsm() on re-enable.
         fsm_holder = [make_fsm()]
 
         # ===== INITIALIZE BLE SERVER =====
         ble = BleServer(name="PolarFeeder")
 
-        # ===== INITIALIZE RADAR (OPTIONAL) =====
+        # ===== INITIALIZE RADAR =====
         radar = None
         if cfg.radar.enabled:
             radar = RadarReader(
@@ -152,7 +148,7 @@ def main() -> int:
             radar.start()
             print(f"[RADAR] started on {cfg.radar.port}", flush=True)
 
-        # ===== INITIALIZE VISION (OPTIONAL) =====
+        # ===== INITIALIZE VISION =====
         vision_tracker = None
         sensor_fusion = None
         if cfg.vision.enabled:
@@ -169,11 +165,12 @@ def main() -> int:
             from picamera2 import Picamera2
             import cv2
             from ultralytics import YOLO
-
+            modelload = "yolov8n.pt"
+            print("[Model] Model Loaded =", modelload, flush=True)
             print("[CAMERA] Thread starting...", flush=True)
 
             try:
-                model = YOLO("yolov8n.pt", task="detect")
+                model = YOLO(modelload, task="detect")
                 local_tracker = VisionTracker()
 
                 # GPIO indicator LED on pin 27 — high when bear detected
@@ -203,7 +200,10 @@ def main() -> int:
                         continue
 
                     results = model(frame, classes=[21], verbose=False)
+
+                    dtimestart = time.perf_counter()
                     detections = results[0].boxes
+                    dtimeend = time.perf_counter()
 
                     motion = 0.0
                     if len(detections) > 0:
@@ -223,7 +223,6 @@ def main() -> int:
                             motion = local_tracker.compute_motion(det)
                     else:
                         local_tracker.mark_no_detection()
-
                     runtime["vision_motion"] = motion
 
                     obj_count = len(detections)
@@ -235,27 +234,31 @@ def main() -> int:
                     radar_dist = runtime["radar_distance_m"]
                     radar_str = f"{radar_dist:.2f}m" if radar_dist is not None else "None"
 
-                    # ===== DUAL-PATH FSM TICK =====
-                    # Route to correct FSM tick signature based on active mode.
+                    # ===== DUAL-PATH FSM TICK (respects manual override) =====
                     fsm = fsm_holder[0]
                     prev_state = fsm.state.name
+                    override_active = time.monotonic() < runtime["manual_override_until"]
 
-                    if runtime["fsm_mode"] == "INVERSE":
-                        fsm.tick(
-                            enable=bool(runtime["enable"]),
-                            bear_detected=(obj_count > 0),
-                            motion_magnitude=motion,
-                            radar_distance_m=radar_dist,
-                            now=time.monotonic(),
-                        )
-                    else:  # LURE
-                        fsm.tick(
-                            enable=bool(runtime["enable"]),
-                            threat=is_threat,
-                            motion_magnitude=motion,
-                            radar_distance_m=radar_dist,
-                            now=time.monotonic(),
-                        )
+                    if not override_active:
+                        if runtime["fsm_mode"] == "INVERSE":
+                            fsm.tick(
+                                enable=bool(runtime["enable"]),
+                                bear_detected=(obj_count > 0),
+                                motion_magnitude=motion,
+                                radar_distance_m=radar_dist,
+                                now=time.monotonic(),
+                            )
+                        else:  # LURE
+                            fsm.tick(
+                                enable=bool(runtime["enable"]),
+                                threat=is_threat,
+                                motion_magnitude=motion,
+                                radar_distance_m=radar_dist,
+                                now=time.monotonic(),
+                            )
+                    else:
+                        if frame_index % 20 == 0:
+                            print("[MANUAL] FSM tick suppressed (override active)", flush=True)
 
                     new_state = fsm.state.name
 
@@ -263,21 +266,27 @@ def main() -> int:
                         f"[CAMERA] frame={frame_index} objects={obj_count} "
                         f"motion={motion:.1f} vision_threat={is_vision_threat} "
                         f"radar_threat={is_radar_threat} radar_dist={radar_str} "
-                        f"mode={runtime['fsm_mode']} fsm={new_state}",
+                        f"mode={runtime['fsm_mode']} fsm={new_state} "
+                        f"override={int(override_active)}",
                         flush=True,
                     )
+
+                    if obj_count > 0:
+                        dtime = dtimeend - dtimestart
+                        print(f"[CAMERA] detection_time={dtime:.4f}s", flush=True)
 
                     if new_state != prev_state:
                         print(f"[FSM] {prev_state} -> {new_state}", flush=True)
                         logger.log_event(
                             state=new_state,
                             enable_flag=runtime["enable"],
+                            fsm_mode=runtime["fsm_mode"],
                             command="FSM_TRANSITION",
                             result=f"{prev_state}->{new_state}",
                             notes=(
-                                f"mode={runtime['fsm_mode']} motion={motion:.1f} "
-                                f"vision_threat={is_vision_threat} "
-                                f"radar_threat={is_radar_threat} radar_dist={radar_str}"
+                                f"motion={motion:.1f} vision_threat={is_vision_threat} "
+                                f"radar_threat={is_radar_threat} radar_dist={radar_str} "
+                                f"override={int(override_active)}"
                             ),
                             radar_enabled=runtime["radar_enabled"],
                             radar_zone=runtime["radar_last_bin"],
@@ -287,10 +296,24 @@ def main() -> int:
                         logger.log_telemetry(
                             state=new_state,
                             enable_flag=runtime["enable"],
-                            stillness_raw=motion,
-                            stillness_filtered=motion,
+                            fsm_mode=runtime["fsm_mode"],
+                            frame_index=frame_index,
+                            obj_count=obj_count,
+                            bear_detected=int(obj_count > 0),
+                            vision_motion=motion,
+                            vision_threat=int(is_vision_threat),
+                            camera_active=1,
+                            radar_dist_m=radar_dist,
+                            radar_threat=int(is_radar_threat),
                             radar_enabled=runtime["radar_enabled"],
                             radar_zone=radar_str,
+                            fused_threat=runtime["fused_threat"],
+                            motion_threshold=float(runtime["motion_threshold"]),
+                            retract_delay_ms=int(runtime["retract_delay_ms"]),
+                            still_min_dur_s=float(runtime["stillness_min_duration_s"]),
+                            manual_override_active=int(override_active),
+                            stillness_raw=motion,
+                            stillness_filtered=motion,
                         )
 
             except Exception as e:
@@ -336,11 +359,12 @@ def main() -> int:
         # ===== BLE COMMAND HANDLER =====
         def handle_ble(cmd) -> str:
             s = cmd.raw.strip()
-            
+
             if not s:
                 return "ERR EMPTY"
             s_up = s.upper()
-            # ----- PING (connection health check) -----
+
+            # ----- PING -----
             if s_up == "PING":
                 return f"PONG fsm={runtime['feeder_state']} mode={runtime['fsm_mode']}"
             print(f"[BLE] cmd={s!r}", flush=True)
@@ -355,26 +379,34 @@ def main() -> int:
                 runtime["enable"] = int(val)
 
                 if runtime["enable"] == 1:
-                    # Recreate FSM fresh with current mode and parameters
                     fsm_holder[0] = make_fsm()
                     runtime["enable_armed_at"] = time.monotonic()
+                    runtime["manual_override_until"] = 0.0  # clear any stale override on fresh enable
                     if radar:
                         radar.reset_baseline()
                     if cfg.vision.enabled:
                         start_camera_thread()
                     logger.log_event(
-                        state="BLE_TEST", enable_flag=1,
-                        command="ENABLE", result=f"{prev}->1",
+                        state=runtime["feeder_state"],
+                        enable_flag=1,
+                        fsm_mode=runtime["fsm_mode"],
+                        command="ENABLE",
+                        result=f"{prev}->1",
                         notes=f"System enabled mode={runtime['fsm_mode']}",
-                        radar_enabled=runtime["radar_enabled"], radar_zone="",
+                        radar_enabled=runtime["radar_enabled"],
+                        radar_zone="",
                     )
                 else:
                     stop_camera_thread()
                     logger.log_event(
-                        state="BLE_TEST", enable_flag=0,
-                        command="ENABLE", result=f"{prev}->0",
+                        state=runtime["feeder_state"],
+                        enable_flag=0,
+                        fsm_mode=runtime["fsm_mode"],
+                        command="ENABLE",
+                        result=f"{prev}->0",
                         notes="System disabled",
-                        radar_enabled=runtime["radar_enabled"], radar_zone="",
+                        radar_enabled=runtime["radar_enabled"],
+                        radar_zone="",
                     )
 
                 return f"ACK ENABLE={runtime['enable']}"
@@ -384,18 +416,31 @@ def main() -> int:
                 val = s.split("=", 1)[1].strip().upper()
                 if val not in ("LURE", "INVERSE"):
                     return "ERR BAD_VALUE MODE must be LURE or INVERSE"
-                if runtime["enable"] == 1:
-                    return "ERR MODE_CHANGE_WHILE_ENABLED send ENABLE=0 first"
                 if val == runtime["fsm_mode"]:
                     return f"ACK MODE={val} (no change)"
 
+                was_enabled = runtime["enable"] == 1
+                if was_enabled:
+                    print(f"[MODE] Stopping camera for hot-swap to {val}...", flush=True)
+                    stop_camera_thread()
+
                 runtime["fsm_mode"] = val
+                fsm_holder[0] = make_fsm()
                 print(f"[MODE] Switched to {val} FSM", flush=True)
+
+                if was_enabled:
+                    start_camera_thread()
+                    print(f"[MODE] Camera restarted with {val} FSM", flush=True)
+
                 logger.log_event(
-                    state="BLE_TEST", enable_flag=runtime["enable"],
-                    command="MODE", result=val,
-                    notes=f"FSM mode changed to {val}",
-                    radar_enabled=runtime["radar_enabled"], radar_zone="",
+                    state=runtime["feeder_state"],
+                    enable_flag=runtime["enable"],
+                    fsm_mode=runtime["fsm_mode"],
+                    command="MODE",
+                    result=val,
+                    notes=f"FSM mode hot-swapped to {val} (camera_restart={was_enabled})",
+                    radar_enabled=runtime["radar_enabled"],
+                    radar_zone="",
                 )
                 return f"ACK MODE={val}"
 
@@ -410,27 +455,42 @@ def main() -> int:
                         act.extend()
                     else:
                         act.retract()
+                    runtime["manual_override_until"] = time.monotonic() + 5.0
+                    print(f"[MANUAL] Actuator override active for 5s", flush=True)
+                    logger.log_event(
+                        state=runtime["feeder_state"],
+                        enable_flag=runtime["enable"],
+                        fsm_mode=runtime["fsm_mode"],
+                        command=f"ACTUATOR={val}",
+                        result="SUCCESS",
+                        notes="Manual actuator command; FSM suppressed 5s",
+                        radar_enabled=runtime["radar_enabled"],
+                        radar_zone="",
+                    )
                 except Exception as e:
                     import traceback
                     traceback.print_exc()
                     return f"ERR ACTUATOR_FAIL {type(e).__name__}"
                 return f"ACK ACTUATOR={val}"
 
-            # ----- RETRACT (manual override from FEEDING/DISPENSING state) -----
+            # ----- RETRACT (FSM state override) -----
             if s_up == "RETRACT":
                 success = fsm_holder[0].manual_retract()
                 if success:
                     logger.log_event(
                         state=fsm_holder[0].state.name,
                         enable_flag=runtime["enable"],
-                        command="RETRACT", result="SUCCESS",
-                        notes="Manual retraction",
-                        radar_enabled=runtime["radar_enabled"], radar_zone="",
+                        fsm_mode=runtime["fsm_mode"],
+                        command="RETRACT",
+                        result="SUCCESS",
+                        notes="Manual retraction via FSM",
+                        radar_enabled=runtime["radar_enabled"],
+                        radar_zone="",
                     )
                     return "ACK RETRACT"
                 return "ERR RETRACT not_in_retractable_state"
 
-            # ----- VISION= (CSV detection line from external source) -----
+            # ----- VISION= -----
             if s_up.startswith("VISION="):
                 if not cfg.vision.enabled or vision_tracker is None:
                     return "ERR VISION_DISABLED"
@@ -448,13 +508,15 @@ def main() -> int:
                     return f"ERR VISION_EXCEPTION {type(e).__name__}"
 
             # ----- SET key=value -----
+            KNOWN_ALIASES = {"mt", "sm", "rd", "motion_thresh", "still_dur_s", "retract_ms"}
             if s_up.startswith("SET "):
                 rest = s[4:].strip()
+                print(f"[SET DEBUG] s={s!r} rest={rest!r}", flush=True)
                 if "=" not in rest:
                     return "ERR BAD_FORMAT SET"
                 key, value = [x.strip() for x in rest.split("=", 1)]
                 key_l = key.lower()
-                if key_l not in runtime or key_l == "enable":
+                if (key_l not in runtime and key_l not in KNOWN_ALIASES) or key_l == "enable":
                     return f"ERR UNKNOWN_KEY {key}"
 
                 def to_bool01(v):
@@ -469,75 +531,98 @@ def main() -> int:
                             f /= 100.0
                         if not (0.0 <= f <= 1.0):
                             return "ERR OUT_OF_RANGE stillness_threshold 0 1"
-                        runtime[key_l] = f
-                    elif key_l == "stillness_min_duration_s":
-                        f = float(value)
-                        if not (0.0 <= f <= 60.0):
-                            return "ERR OUT_OF_RANGE stillness_min_duration_s 0 60"
-                        runtime[key_l] = f
-                    elif key_l == "motion_threshold":
+                        runtime["stillness_threshold"] = f
+
+                    elif key_l in ("mt", "motion_thresh", "motion_threshold"):
                         f = float(value)
                         if not (0.0 <= f <= 1000.0):
                             return "ERR OUT_OF_RANGE motion_threshold 0 1000"
-                        runtime[key_l] = f
+                        runtime["motion_threshold"] = f
                         fsm_holder[0].motion_threshold = f
                         if hasattr(fsm_holder[0], 'base_motion_threshold'):
                             fsm_holder[0].base_motion_threshold = f
                         if sensor_fusion:
                             sensor_fusion.base_motion_threshold = f
+
+                    elif key_l in ("sm", "still_dur_s", "stillness_min_duration_s"):
+                        f = float(value)
+                        if not (0.0 <= f <= 60.0):
+                            return "ERR OUT_OF_RANGE stillness_min_duration_s 0 60"
+                        runtime["stillness_min_duration_s"] = f
+                        if hasattr(fsm_holder[0], 'min_still_duration_s'):
+                            fsm_holder[0].min_still_duration_s = f
+
+                    elif key_l in ("rd", "retract_ms", "retract_delay_ms"):
+                        n = int(value)
+                        if not (0 <= n <= 3000):
+                            return "ERR OUT_OF_RANGE retract_delay_ms 0 3000"
+                        runtime["retract_delay_ms"] = n
+                        if hasattr(fsm_holder[0], 'retract_delay_s'):
+                            fsm_holder[0].retract_delay_s = n / 1000.0
+
                     elif key_l == "detection_distance_m":
                         f = float(value)
                         if not (0.5 <= f <= 50.0):
                             return "ERR OUT_OF_RANGE detection_distance_m 0.5 50"
-                        runtime[key_l] = f
+                        runtime["detection_distance_m"] = f
                         fsm_holder[0].detection_distance_m = f
                         if sensor_fusion:
                             sensor_fusion.detection_distance_m = f
-                    elif key_l == "retract_delay_ms":
-                        n = int(value)
-                        if not (0 <= n <= 3000):
-                            return "ERR OUT_OF_RANGE retract_delay_ms 0 3000"
-                        runtime[key_l] = n
-                        if hasattr(fsm_holder[0], 'retract_delay_s'):
-                            fsm_holder[0].retract_delay_s = n / 1000.0
+
                     elif key_l == "pulse_ms":
                         n = int(value)
                         if not (50 <= n <= 1000):
                             return "ERR OUT_OF_RANGE pulse_ms 50 1000"
-                        runtime[key_l] = n
+                        runtime["pulse_ms"] = n
                         try:
                             act.pulse_s = n / 1000.0
                         except Exception:
                             pass
+
                     elif key_l == "stillness_publish_hz":
                         f = float(value)
                         if not (1.0 <= f <= 30.0):
                             return "ERR OUT_OF_RANGE stillness_publish_hz 1 30"
-                        runtime[key_l] = f
+                        runtime["stillness_publish_hz"] = f
+
                     elif key_l == "telemetry_hz":
                         f = float(value)
                         if not (1.0 <= f <= 30.0):
                             return "ERR OUT_OF_RANGE telemetry_hz 1 30"
-                        runtime[key_l] = f
+                        runtime["telemetry_hz"] = f
+
                     elif key_l == "max_storage_mb":
                         f = float(value)
                         if not (10.0 <= f <= 5000.0):
                             return "ERR OUT_OF_RANGE max_storage_mb 10 5000"
-                        runtime[key_l] = f
+                        runtime["max_storage_mb"] = f
+
                     elif key_l in ("radar_enabled", "log_enabled", "ble_disconnect_safe_idle"):
                         runtime[key_l] = to_bool01(value)
+
                     else:
                         runtime[key_l] = value
+
                 except ValueError:
                     return f"ERR TYPE {key} bad_value"
 
+                canonical_map = {
+                    "mt": "motion_threshold", "motion_thresh": "motion_threshold",
+                    "sm": "stillness_min_duration_s", "still_dur_s": "stillness_min_duration_s",
+                    "rd": "retract_delay_ms", "retract_ms": "retract_delay_ms",
+                }
+                canonical = canonical_map.get(key_l, key_l)
                 logger.log_event(
-                    state="BLE_TEST", enable_flag=runtime["enable"],
-                    command=f"SET {key_l}", result=str(runtime[key_l]),
+                    state=runtime["feeder_state"],
+                    enable_flag=runtime["enable"],
+                    fsm_mode=runtime["fsm_mode"],
+                    command=f"SET {canonical}",
+                    result=str(runtime[canonical]),
                     notes="Config parameter set (not persisted)",
-                    radar_enabled=runtime["radar_enabled"], radar_zone="",
+                    radar_enabled=runtime["radar_enabled"],
+                    radar_zone="",
                 )
-                return f"ACK {key_l}={runtime[key_l]}"
+                return f"ACK {canonical}={runtime[canonical]}"
 
             # ----- GET key -----
             if s_up.startswith("GET "):
@@ -547,7 +632,10 @@ def main() -> int:
                 return f"ACK {key_l}={runtime[key_l]}"
 
             # ----- STATUS -----
-            if s_up in ("GET STATUS", "STATUS"):
+            if s_up.startswith("STATUS"):
+                radar_dist_str = f"{runtime['radar_distance_m']:.2f}" if runtime['radar_distance_m'] is not None else "None"
+                bear_detected = 1 if (runtime["vision_motion"] > 0 and cam_state["active"]) else 0
+                override_active = int(time.monotonic() < runtime["manual_override_until"])
                 vision_status = ""
                 if cfg.vision.enabled:
                     vision_status = (
@@ -555,6 +643,7 @@ def main() -> int:
                         f" vision_motion={runtime['vision_motion']:.2f}"
                         f" fused_threat={runtime['fused_threat']}"
                         f" camera_active={int(cam_state['active'])}"
+                        f" bear_detected={bear_detected}"
                     )
                 return (
                     f"ACK STATUS "
@@ -562,9 +651,9 @@ def main() -> int:
                     f"fsm_mode={runtime['fsm_mode']} "
                     f"feeder_state={runtime['feeder_state']} "
                     f"retract_delay_ms={runtime['retract_delay_ms']} "
-                    f"pulse_ms={runtime['pulse_ms']} "
-                    f"radar_enabled={int(runtime['radar_enabled'])}"
-                    f"{vision_status}"
+                    f"{vision_status} "
+                    f"radar_dist={radar_dist_str} "
+                    f"override={override_active} "
                 )
 
             return "ERR UNKNOWN_CMD"
@@ -574,12 +663,16 @@ def main() -> int:
         threading.Thread(target=ble.start, daemon=True).start()
 
         logger.log_event(
-            state="BLE_TEST", enable_flag=runtime["enable"],
-            command="SESSION", result="START",
-            notes=f"BLE test started; config={Path(args.config).as_posix()}",
-            radar_enabled=runtime["radar_enabled"], radar_zone="",
+            state="IDLE",
+            enable_flag=runtime["enable"],
+            fsm_mode=runtime["fsm_mode"],
+            command="SESSION",
+            result="START",
+            notes=f"Session started; config={Path(args.config).as_posix()}",
+            radar_enabled=runtime["radar_enabled"],
+            radar_zone="",
         )
-        print("BLE test mode running. Send newline-terminated commands.", flush=True)
+        print("BLE server running. Waiting for commands.", flush=True)
         print(f"Session log: {log_path}", flush=True)
 
         # ===== MAIN CONTROL LOOP =====
@@ -596,21 +689,23 @@ def main() -> int:
                         runtime["enable"] = 0
                         stop_camera_thread()
                         logger.log_event(
-                            state="BLE_TEST", enable_flag=0,
-                            command="SAFETY", result="BLE_TIMEOUT->ENABLE=0",
+                            state=runtime["feeder_state"],
+                            enable_flag=0,
+                            fsm_mode=runtime["fsm_mode"],
+                            command="SAFETY",
+                            result="BLE_TIMEOUT->ENABLE=0",
                             notes="Forced safe idle due to BLE inactivity",
-                            radar_enabled=runtime["radar_enabled"], radar_zone="",
+                            radar_enabled=runtime["radar_enabled"],
+                            radar_zone="",
                         )
                         ble.notify("ACK ENABLE=0\n")
 
-                # Radar reading — gate depends on mode
+                # Radar reading
                 threat = False
                 radar_zone = ""
                 RADAR_ARM_DELAY_S = 1.5
                 fsm_state_name = getattr(fsm_holder[0].state, "name", str(fsm_holder[0].state))
 
-                # LURE mode gates radar to LURE state only.
-                # INVERSE mode allows radar distance to flow in any state for proximity info.
                 if runtime["fsm_mode"] == "LURE":
                     radar_allowed = (
                         runtime["enable"] == 1
@@ -651,34 +746,36 @@ def main() -> int:
                     runtime["fused_threat"] = int(fused_threat)
                     runtime["radar_fused_threat"] = bool(fused_threat)
 
-                # Always keep latest radar distance fresh for camera thread
+                # Keep latest radar distance fresh for camera thread
                 if radar:
                     rr_latest = radar.get_latest()
                     if rr_latest.valid:
                         runtime["radar_distance_m"] = rr_latest.distance_m
                         runtime["radar_threat"] = int(rr_latest.threat)
 
-                # Tick FSM from main loop only when camera thread is not running
+                # Tick FSM from main loop only when camera is not running
                 if not cam_state["active"]:
-                    fsm = fsm_holder[0]
-                    if runtime["fsm_mode"] == "INVERSE":
-                        fsm.tick(
-                            enable=bool(runtime["enable"]),
-                            bear_detected=False,  # no camera = no detection
-                            motion_magnitude=None,
-                            radar_distance_m=radar_distance_m,
-                            now=time.monotonic(),
-                        )
-                    else:
-                        fsm.tick(
-                            enable=bool(runtime["enable"]),
-                            threat=fused_threat,
-                            motion_magnitude=motion_magnitude if cfg.vision.enabled else None,
-                            radar_distance_m=radar_distance_m,
-                            now=time.monotonic(),
-                        )
+                    override_active = time.monotonic() < runtime["manual_override_until"]
+                    if not override_active:
+                        fsm = fsm_holder[0]
+                        if runtime["fsm_mode"] == "INVERSE":
+                            fsm.tick(
+                                enable=bool(runtime["enable"]),
+                                bear_detected=False,
+                                motion_magnitude=None,
+                                radar_distance_m=radar_distance_m,
+                                now=time.monotonic(),
+                            )
+                        else:
+                            fsm.tick(
+                                enable=bool(runtime["enable"]),
+                                threat=fused_threat,
+                                motion_magnitude=motion_magnitude if cfg.vision.enabled else None,
+                                radar_distance_m=radar_distance_m,
+                                now=time.monotonic(),
+                            )
 
-                # Track FSM state for runtime/logging
+                # Track FSM state
                 new_state = getattr(fsm_holder[0].state, "name", str(fsm_holder[0].state))
                 runtime["feeder_state"] = new_state
                 runtime["radar_last_bin"] = radar_zone
@@ -689,10 +786,14 @@ def main() -> int:
         except KeyboardInterrupt:
             stop_camera_thread()
             logger.log_event(
-                state="BLE_TEST", enable_flag=runtime["enable"],
-                command="SESSION", result="STOP",
-                notes="BLE test stopped by user",
-                radar_enabled=runtime["radar_enabled"], radar_zone="",
+                state=runtime["feeder_state"],
+                enable_flag=runtime["enable"],
+                fsm_mode=runtime["fsm_mode"],
+                command="SESSION",
+                result="STOP",
+                notes="Session stopped by user",
+                radar_enabled=runtime["radar_enabled"],
+                radar_zone="",
             )
             try:
                 if radar:
@@ -704,10 +805,10 @@ def main() -> int:
             except Exception:
                 pass
             logger.close()
-            print("BLE test stopped.", flush=True)
+            print("Session stopped.", flush=True)
             return 0
 
-    # ===== DEMO LOGGING MODE =====
+    # ===== DEMO MODE =====
     enable_flag = 1
     state = "ENABLED"
     session_id = make_session_id()
@@ -717,10 +818,14 @@ def main() -> int:
     logger.open()
 
     logger.log_event(
-        state=state, enable_flag=enable_flag,
-        command="enable_flag", result="0->1",
-        notes=f"Session start; config={Path(args.config).as_posix()}",
-        radar_enabled=cfg.radar.enabled, radar_zone="",
+        state=state,
+        enable_flag=enable_flag,
+        fsm_mode="DEMO",
+        command="SESSION",
+        result="START",
+        notes=f"Demo session started; config={Path(args.config).as_posix()}",
+        radar_enabled=cfg.radar.enabled,
+        radar_zone="",
     )
 
     telemetry_hz = float(cfg.logging.telemetry_hz)
@@ -733,20 +838,25 @@ def main() -> int:
         still_raw = random.random()
         still_f = (1 - alpha) * still_f + alpha * still_raw
         logger.log_telemetry(
-            state=state, enable_flag=enable_flag,
-            stillness_raw=still_raw, stillness_filtered=still_f,
+            state=state,
+            enable_flag=enable_flag,
+            fsm_mode="DEMO",
+            stillness_raw=still_raw,
+            stillness_filtered=still_f,
             radar_enabled=cfg.radar.enabled,
             radar_zone="DISABLED" if not cfg.radar.enabled else "UNKNOWN",
         )
         time.sleep(period_s)
 
-    enable_flag = 0
-    state = "IDLE"
     logger.log_event(
-        state=state, enable_flag=enable_flag,
-        command="enable_flag", result="1->0",
-        notes="Session end (demo complete)",
-        radar_enabled=cfg.radar.enabled, radar_zone="",
+        state="IDLE",
+        enable_flag=0,
+        fsm_mode="DEMO",
+        command="SESSION",
+        result="STOP",
+        notes="Demo session complete",
+        radar_enabled=cfg.radar.enabled,
+        radar_zone="",
     )
     logger.close()
     print(f"Wrote session log: {log_path}")
