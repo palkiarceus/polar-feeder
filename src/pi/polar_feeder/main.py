@@ -22,6 +22,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 import threading
 import lgpio
+import os
 
 from polar_feeder.config.loader import load_config
 from polar_feeder.logging.csv_logger import CsvSessionLogger, pick_log_dir
@@ -248,7 +249,7 @@ def main() -> int:
                                 radar_distance_m=radar_dist,
                                 now=time.monotonic(),
                             )
-                        else:  # LURE
+                        else:
                             fsm.tick(
                                 enable=bool(runtime["enable"]),
                                 threat=is_threat,
@@ -262,6 +263,48 @@ def main() -> int:
 
                     new_state = fsm.state.name
 
+                    # ===== DRAW BOUNDING BOXES =====
+                    display_frame = frame.copy()
+                    if len(detections) > 0:
+                        for i in range(len(detections)):
+                            det_i = detections[i]
+                            conf = det_i.conf.item()
+                            if conf > 0.5:
+                                xyxy_i = det_i.xyxy.cpu().numpy().squeeze()
+                                bx1, by1, bx2, by2 = xyxy_i.astype(int)
+                                cv2.rectangle(display_frame, (bx1, by1), (bx2, by2), (68, 148, 228), 2)
+                                label = f'Bear: {int(conf * 100)}%'
+                                lsize, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                                ly = max(by1, lsize[1] + 10)
+                                cv2.rectangle(display_frame,
+                                              (bx1, ly - lsize[1] - 10),
+                                              (bx1 + lsize[0], ly + baseline - 10),
+                                              (68, 148, 228), cv2.FILLED)
+                                cv2.putText(display_frame, label, (bx1, ly - 7),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+                    # ===== DRAW HUD =====
+                    hud_color = (0, 255, 255)
+                    cv2.putText(display_frame, f'FSM: {new_state}',
+                                (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_color, 2)
+                    cv2.putText(display_frame, f'Mode: {runtime["fsm_mode"]}',
+                                (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_color, 2)
+                    cv2.putText(display_frame, f'Motion: {motion:.1f}',
+                                (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_color, 2)
+                    cv2.putText(display_frame, f'Radar: {radar_str}',
+                                (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_color, 2)
+                    cv2.putText(display_frame, f'Objects: {obj_count}',
+                                (10, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_color, 2)
+                    if override_active:
+                        cv2.putText(display_frame, 'MANUAL OVERRIDE',
+                                    (10, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+                    # ===== DISPLAY (only if a monitor is available) =====
+                    if os.environ.get("DISPLAY"):
+                        cv2.imshow("Polar Feeder - Live View", display_frame)
+                        cv2.waitKey(1)
+
+                    # ===== TERMINAL + LOGGING (unchanged) =====
                     print(
                         f"[CAMERA] frame={frame_index} objects={obj_count} "
                         f"motion={motion:.1f} vision_threat={is_vision_threat} "
@@ -323,6 +366,11 @@ def main() -> int:
             finally:
                 cam_state["active"] = False
                 try:
+                    if os.environ.get("DISPLAY"):
+                        cv2.destroyAllWindows()
+                except Exception:
+                    pass
+                try:
                     lgpio.gpio_write(led_h, 27, 0)
                     lgpio.gpiochip_close(led_h)
                 except Exception:
@@ -333,7 +381,7 @@ def main() -> int:
                 except Exception:
                     pass
                 print("[CAMERA] Thread stopped.", flush=True)
-
+                
         # ===== CAMERA START/STOP HELPERS =====
         def start_camera_thread():
             if cam_state["active"]:
