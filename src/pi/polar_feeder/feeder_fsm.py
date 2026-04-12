@@ -234,7 +234,7 @@ class FeederFSM:
                 
                 #COMMENTED OUT FOR TESTING
                 
-                # self._set_state(State.FEEDING, deadline=None)  # Stay extended indefinitely
+                self._set_state(State.FEEDING, deadline=None)  # Stay extended indefinitely
                 return
 
             # Detection distance check: Only allow threat signals when bear is within detection_distance_m

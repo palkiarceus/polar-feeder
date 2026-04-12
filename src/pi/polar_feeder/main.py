@@ -70,7 +70,7 @@ def main() -> int:
         # ===== RUNTIME STATE =====
         runtime = {
             "enable": 0,
-            "fsm_mode": "INVERSE",
+            "fsm_mode": "LURE",
             "stillness_threshold": float(cfg.stillness.trigger_threshold),
             "stillness_min_duration_s": float(cfg.stillness.min_duration_s),
             "stillness_publish_hz": float(cfg.stillness.publish_hz),
@@ -250,13 +250,16 @@ def main() -> int:
                                 now=time.monotonic(),
                             )
                         else:
-                            fsm.tick(
-                                enable=bool(runtime["enable"]),
-                                threat=is_threat,
-                                motion_magnitude=motion,
-                                radar_distance_m=radar_dist,
-                                now=time.monotonic(),
-                            )
+                            try:
+                                fsm.tick(
+                                    enable=bool(runtime["enable"]),
+                                    threat=is_threat,
+                                    motion_magnitude=motion,
+                                    radar_distance_m=radar_dist,
+                                    now=time.monotonic(),
+                                )
+                            except Exception as e:
+                                print(f"[FSM] tick error (non-fatal): {e}", flush=True)
                     else:
                         if frame_index % 20 == 0:
                             print("[MANUAL] FSM tick suppressed (override active)", flush=True)
@@ -275,7 +278,7 @@ def main() -> int:
 
                     if obj_count > 0:
                         dtime = dtimeend - dtimestart
-                        print(f"[CAMERA] detection_time={dtime:.4f}s", flush=True)
+                        print(f"[CAMERA] detection_time={dtime}s", flush=True)
 
                     if new_state != prev_state:
                         print(f"[FSM] {prev_state} -> {new_state}", flush=True)

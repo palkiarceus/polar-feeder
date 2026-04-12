@@ -103,21 +103,20 @@ def _transmit(filename: str, tx_pin: int = 17) -> None:
     # Initialize GPIO
     h = lgpio.gpiochip_open(0)
     try:
-        # Configure the pin as output
-        lgpio.gpio_claim_output(h, tx_pin)
+        try:
+            lgpio.gpio_claim_output(h, tx_pin)
+        except Exception:
+            pass  # already claimed, pin is already in output mode
 
         print(f"Transmitting {filename} on GPIO{tx_pin}...", flush=True)
-        
-        # Replay the pulse sequence
         for s, dt in zip(states, durations):
-            lgpio.gpio_write(h, tx_pin, int(s))  # Set GPIO to state (0 or 1)
-            time.sleep(float(dt))                 # Wait for duration
+            lgpio.gpio_write(h, tx_pin, int(s))
+            time.sleep(float(dt))
 
-        # End with GPIO low (safety)
         lgpio.gpio_write(h, tx_pin, 0)
         print("Transmission complete.", flush=True)
+
     finally:
-        # Always close GPIO, even if there's an error
         lgpio.gpiochip_close(h)
 
 
