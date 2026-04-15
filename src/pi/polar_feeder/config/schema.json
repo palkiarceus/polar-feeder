@@ -1,66 +1,84 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "stillness": {
+    "lure": {
       "type": "object",
       "properties": {
-        "publish_hz": { "type": "number", "minimum": 1, "maximum": 30 },
-        "trigger_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
-        "min_duration_s": { "type": "number", "minimum": 0, "maximum": 60 }
+        "motion_threshold":  { "type": "number",  "minimum": 5,    "maximum": 200  },
+        "retract_delay_ms":  { "type": "integer", "minimum": 0,    "maximum": 3000 },
+        "cooldown_s":        { "type": "number",  "minimum": 0.0,  "maximum": 30.0 }
       },
-      "required": ["publish_hz", "trigger_threshold", "min_duration_s"]
+      "required": ["motion_threshold", "retract_delay_ms", "cooldown_s"],
+      "additionalProperties": false
+    },
+    "inverse": {
+      "type": "object",
+      "properties": {
+        "motion_threshold":          { "type": "number", "minimum": 5,   "maximum": 200  },
+        "stillness_min_duration_s":  { "type": "number", "minimum": 0.5, "maximum": 10.0 },
+        "noise_buffer_multiplier":   { "type": "number", "minimum": 1.0, "maximum": 3.0  },
+        "cooldown_s":                { "type": "number", "minimum": 0.0, "maximum": 30.0 }
+      },
+      "required": ["motion_threshold", "stillness_min_duration_s", "noise_buffer_multiplier", "cooldown_s"],
+      "additionalProperties": false
     },
     "logging": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "telemetry_hz": { "type": "number", "minimum": 1, "maximum": 30 },
-        "max_storage_mb": { "type": "number", "minimum": 10, "maximum": 5000 },
-        "log_dir": { "type": "string" }
+        "enabled":        { "type": "boolean" },
+        "telemetry_hz":   { "type": "number",  "minimum": 1,  "maximum": 30   },
+        "max_storage_mb": { "type": "number",  "minimum": 10, "maximum": 5000 },
+        "log_dir":        { "type": "string" }
       },
-      "required": ["enabled", "telemetry_hz", "max_storage_mb", "log_dir"]
+      "required": ["enabled", "telemetry_hz", "max_storage_mb", "log_dir"],
+      "additionalProperties": false
     },
     "radar": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "port": { "type": "string" },
-        "baud": { "type": "integer", "minimum": 1200, "maximum": 2000000 },
-        "timeout_s": { "type": "number", "minimum": 0.0, "maximum": 5.0 },
+        "enabled":               { "type": "boolean" },
+        "port":                  { "type": "string"  },
+        "baud":                  { "type": "integer", "minimum": 1200,  "maximum": 2000000 },
+        "timeout_s":             { "type": "number",  "minimum": 0.0,   "maximum": 5.0     },
         "zone_m": {
           "type": "array",
           "items": { "type": "number", "minimum": 0.1, "maximum": 50 },
           "minItems": 1
         },
-        "distance_jump_m": { "type": "number", "minimum": 0.01, "maximum": 5.0 },
-        "detection_distance_m": { "type": "number", "minimum": 0.5, "maximum": 50.0 }
+        "distance_jump_m":       { "type": "number",  "minimum": 0.01,  "maximum": 5.0     },
+        "detection_distance_m":  { "type": "number",  "minimum": 0.5,   "maximum": 50.0    }
       },
-      "required": ["enabled", "port", "baud", "timeout_s", "zone_m", "distance_jump_m", "detection_distance_m"]
+      "required": ["enabled", "port", "baud", "timeout_s", "zone_m", "distance_jump_m", "detection_distance_m"],
+      "additionalProperties": false
     },
     "safety": {
       "type": "object",
       "properties": {
         "ble_disconnect_safe_idle": { "type": "boolean" }
       },
-      "required": ["ble_disconnect_safe_idle"]
+      "required": ["ble_disconnect_safe_idle"],
+      "additionalProperties": false
+    },
     "actuator": {
       "type": "object",
       "properties": {
-        "retract_delay_ms": { "type": "integer", "minimum": 0, "maximum": 3000 },
-        "pulse_ms": { "type": "integer", "minimum": 50, "maximum": 1000 },
-        "feeding_distance_m": { "type": "number", "minimum": 0.1, "maximum": 5.0 }
+        "pulse_ms":           { "type": "integer", "minimum": 50,  "maximum": 1000 },
+        "feeding_distance_m": { "type": "number",  "minimum": 0.1, "maximum": 5.0  }
       },
-      "required": ["retract_delay_ms", "pulse_ms", "feeding_distance_m"]
+      "required": ["pulse_ms", "feeding_distance_m"],
+      "additionalProperties": false
     },
     "vision": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "motion_threshold": { "type": "number", "minimum": 0.0, "maximum": 1000.0 },
+        "enabled":       { "type": "boolean" },
         "sync_window_s": { "type": "number", "minimum": 0.1, "maximum": 5.0 }
       },
-      "required": ["enabled", "motion_threshold", "sync_window_s"]
+      "required": ["enabled", "sync_window_s"],
+      "additionalProperties": false
     }
   },
-  "required": ["stillness", "logging", "radar", "safety", "actuator", "vision"]
+  "required": ["lure", "inverse", "logging", "radar", "safety", "actuator", "vision"],
+  "additionalProperties": false
 }

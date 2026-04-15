@@ -1,8 +1,14 @@
 {
-  "stillness": {
-    "publish_hz": 5,
-    "trigger_threshold": 0.85,
-    "min_duration_s": 2.0
+  "lure": {
+    "motion_threshold": 30.0,
+    "retract_delay_ms": 500,
+    "cooldown_s": 2.0
+  },
+  "inverse": {
+    "motion_threshold": 20.0,
+    "stillness_min_duration_s": 1.5,
+    "noise_buffer_multiplier": 1.5,
+    "cooldown_s": 2.0
   },
   "logging": {
     "enabled": true,
@@ -23,13 +29,11 @@
     "ble_disconnect_safe_idle": false
   },
   "actuator": {
-    "retract_delay_ms": 2500,
     "pulse_ms": 200,
     "feeding_distance_m": 0.5
   },
   "vision": {
     "enabled": true,
-    "motion_threshold": 35.0,
     "sync_window_s": 0.5
   }
 }
