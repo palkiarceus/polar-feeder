@@ -125,15 +125,15 @@ class RadarReader:
         self._seq = 0
 
     def start(self):
-        """
-        Open the serial port and start the background reader thread.
-        
-        After calling this, the radar reader will continuously read from the serial port
-        and update the latest reading. Use get_latest() to retrieve measurements.
-        
-        Thread Safe: Yes - safe to call from any thread.
-        """
-        self._ser = serial.Serial(self.port, baudrate=self.baud, timeout=self.timeout_s)
+        self._ser = serial.Serial(
+            self.port,
+            baudrate=self.baud,
+            timeout=self.timeout_s,
+            rtscts=False,
+            dsrdtr=False,
+        )
+        # Flush any stale data from previous sessions
+        self._ser.reset_input_buffer()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -204,19 +204,25 @@ class RadarReader:
         """
         while not self._stop.is_set():
             try:
-                line = self._ser.readline().decode(errors="ignore").strip()
+                raw = self._ser.readline()
+                line = raw.decode(errors="ignore").strip()
                 if not line:
                     continue
 
-                # Parse the line and extract radar data
-                reading = self._parse_line(line)
+                print(f"[RADAR RAW] {line!r}", flush=True)
 
-                # Update the latest reading (thread-safe)
+                # Skip fragments — valid lines always contain 'bin=' and 'dist='
+                if "bin=" not in line or "dist=" not in line:
+                    continue
+
+                reading = self._parse_line(line)
                 with self._lock:
                     self._latest = reading
 
             except Exception as e:
                 print(f"[RADAR] read error: {type(e).__name__}: {e}", flush=True)
+                with self._lock:
+                    self._latest = RadarReading(valid=False, seq=self._seq)
                 time.sleep(0.1)
 
     def _parse_line(self, line: str) -> RadarReading:

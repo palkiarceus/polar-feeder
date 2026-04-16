@@ -1,12 +1,20 @@
 """
 Inverse Feeder Finite State Machine (FSM) Module — INVERSE mode
 
+
 State Flow:
-    IDLE -> WATCHING -> (bear still >= min_still_duration_s) -> DISPENSING
-                     -> (bear moves or leaves)               -> COOLDOWN -> WATCHING
+    IDLE -> WATCHING -> (bear still >= min_still_duration_s)          -> DISPENSING
+                     -> (bear moves or leaves)                         -> COOLDOWN -> WATCHING
+
+    DISPENSING -> (bear still + close >= reward_hold_s) -> REWARDING -> (manual retract) -> COOLDOWN
+               -> (bear moves or leaves)                -> COOLDOWN -> WATCHING
 
 INVERSE mode rewards stillness: arm stays retracted until the bear holds
-completely still, then extends as a reward. Any movement retracts it again.
+completely still, then extends as a reward. If the bear holds still AND
+is close enough for reward_hold_s, it locks into REWARDING (arm stays
+extended until manual retract). Any movement during DISPENSING retracts
+the arm immediately.
+""
 
 Key differences from LURE mode:
 - motion_threshold here means "max motion to be considered STILL" (lower = stricter)
@@ -22,19 +30,18 @@ from enum import Enum, auto
 
 class InverseState(Enum):
     """
-    States of the INVERSE feeder state machine.
-
     IDLE:       System just enabled. Transitions immediately to WATCHING.
     WATCHING:   Arm retracted. Accumulating stillness timer.
-                Bear must be detected and hold still for min_still_duration_s.
-    DISPENSING: Arm extended. Bear is being rewarded.
-                Held until bear moves (motion > threshold * noise_buffer_multiplier)
-                or leaves frame entirely.
+    DISPENSING: Arm extended. Bear held still long enough but not yet close.
+                Retracts immediately on movement.
+    REWARDING:  Arm extended indefinitely. Bear earned full reward by being
+                still AND close for reward_hold_s. Only manual_retract() exits.
     COOLDOWN:   Arm retracted. Brief pause before watching again.
     """
     IDLE = auto()
     WATCHING = auto()
     DISPENSING = auto()
+    REWARDING = auto()
     COOLDOWN = auto()
 
 
@@ -72,6 +79,8 @@ class InverseFeederFSM:
         self.detection_distance_m = detection_distance_m
         self.feeding_distance_m = feeding_distance_m
         self.noise_buffer_multiplier = max(1.0, noise_buffer_multiplier)
+        self.reward_hold_s = min_still_duration_s   # ← here
+        self._dispensing_since: float | None = None  # ← here
 
         self.state = InverseState.IDLE
         self._deadline = None
@@ -140,6 +149,15 @@ class InverseFeederFSM:
                 and bear_in_range
             )
 
+            # Only reset the timer if motion exceeds threshold * noise_buffer_multiplier.
+            # A single jitter frame above bare threshold no longer kills the stillness streak.
+            break_threshold = self.motion_threshold * self.noise_buffer_multiplier
+            timer_should_reset = (
+                not bear_detected
+                or motion >= break_threshold
+                or not bear_in_range
+            )
+
             if bear_is_still:
                 if self._still_since is None:
                     self._still_since = now
@@ -159,11 +177,11 @@ class InverseFeederFSM:
                     self._still_since = None
                     self._set_state(InverseState.DISPENSING)
                     print("[INVERSE FSM] WATCHING -> DISPENSING (stillness met)", flush=True)
-            else:
+            elif timer_should_reset:
                 if self._still_since is not None:
                     print(
                         f"[INVERSE FSM] WATCHING stillness broken"
-                        f" (motion={motion:.1f} threshold={self.motion_threshold:.1f})",
+                        f" (motion={motion:.1f} break_threshold={break_threshold:.1f})",
                         flush=True,
                     )
                 self._still_since = None
@@ -176,7 +194,40 @@ class InverseFeederFSM:
             break_threshold = self.motion_threshold * self.noise_buffer_multiplier
             bear_is_still = bear_detected and (motion < break_threshold)
 
-            if not bear_is_still:
+            # Bear must also be close enough to earn the full reward lock
+            bear_is_close = (
+                radar_distance_m is not None
+                and radar_distance_m <= self.feeding_distance_m
+            )
+
+            if bear_is_still:
+                if self._dispensing_since is None:
+                    self._dispensing_since = now
+                elapsed = now - self._dispensing_since
+
+                print(
+                    f"[INVERSE FSM] DISPENSING still={elapsed:.1f}s"
+                    f" / {self.reward_hold_s:.1f}s to REWARDING"
+                    f" motion={motion:.1f}"
+                    f" close={bear_is_close}"
+                    f" radar={radar_distance_m}",
+                    flush=True,
+                )
+
+                if elapsed >= self.reward_hold_s and bear_is_close:
+                    self._set_state(InverseState.REWARDING)
+                    print("[INVERSE FSM] DISPENSING -> REWARDING (still + close)", flush=True)
+                elif elapsed >= self.reward_hold_s and not bear_is_close:
+                    # Still held long enough but not close — stay in DISPENSING, reset timer
+                    # so bear has to re-earn it once it approaches
+                    self._dispensing_since = now
+                    print(
+                        f"[INVERSE FSM] DISPENSING hold met but bear too far"
+                        f" ({radar_distance_m}m > {self.feeding_distance_m}m)"
+                        f" — resetting timer",
+                        flush=True,
+                    )
+            else:
                 reason = "moved" if bear_detected else "left frame"
                 print(
                     f"[INVERSE FSM] DISPENSING -> COOLDOWN"
@@ -184,14 +235,13 @@ class InverseFeederFSM:
                     f" break_threshold={break_threshold:.1f})",
                     flush=True,
                 )
+                self._dispensing_since = None
                 self._retract_if_extended()
                 self._set_state(InverseState.COOLDOWN, deadline=now + self.cooldown_s)
-            else:
-                print(
-                    f"[INVERSE FSM] DISPENSING bear still"
-                    f" motion={motion:.1f} / break_threshold={break_threshold:.1f}",
-                    flush=True,
-                )
+            return
+        if self.state == InverseState.REWARDING:
+            # Arm stays extended indefinitely — only manual_retract() exits
+            print("[INVERSE FSM] REWARDING — holding extended, awaiting manual retract", flush=True)
             return
 
         # COOLDOWN: wait before watching again
@@ -204,16 +254,11 @@ class InverseFeederFSM:
             return
 
     def manual_retract(self, now: float | None = None) -> bool:
-        """
-        Manually retract from DISPENSING state (operator override).
-
-        Returns True if retraction was performed, False if not in DISPENSING.
-        Transitions to COOLDOWN rather than WATCHING to give the bear a reset gap.
-        """
-        if self.state != InverseState.DISPENSING:
+        if self.state not in (InverseState.DISPENSING, InverseState.REWARDING):
             return False
         now = now if now is not None else time.monotonic()
+        self._dispensing_since = None
         self._retract_if_extended()
         self._set_state(InverseState.COOLDOWN, deadline=now + self.cooldown_s)
-        print("[INVERSE FSM] Manual retract from DISPENSING -> COOLDOWN", flush=True)
+        print(f"[INVERSE FSM] Manual retract -> COOLDOWN", flush=True)
         return True

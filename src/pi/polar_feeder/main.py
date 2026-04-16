@@ -220,7 +220,7 @@ def main() -> int:
                 print("[CAMERA] PiCamera2 started at 640x480", flush=True)
 
                 frame_index = 0
-                SKIP = 2
+                #SKIP = 2
 
                 while cam_state["active"]:
                     if not cam_state["active"]:
@@ -230,8 +230,8 @@ def main() -> int:
                     frame = cv2.cvtColor(frame_bgra, cv2.COLOR_BGRA2BGR)
                     frame_index += 1
 
-                    if frame_index % SKIP != 0:
-                        continue
+                    #if frame_index % SKIP != 0:
+                        #continue
 
                     results = model(frame, classes=[21], verbose=False)
 
@@ -421,6 +421,9 @@ def main() -> int:
                     _sync_sensor_fusion_threshold()
                     if radar:
                         radar.reset_baseline()
+                        runtime["fused_threat"] = 0
+                        runtime["radar_fused_threat"] = False
+                        runtime["radar_threat"] = 0
                     if cfg.vision.enabled:
                         start_camera_thread()
                     logger.log_event(
@@ -434,7 +437,9 @@ def main() -> int:
                         radar_zone="",
                     )
                 else:
+                    runtime["manual_override_until"] = time.monotonic() + 10.0  # block FSM during shutdown
                     stop_camera_thread()
+                    runtime["manual_override_until"] = 0.0
                     logger.log_event(
                         state=runtime["feeder_state"],
                         enable_flag=0,
@@ -487,7 +492,13 @@ def main() -> int:
                     if val == "EXTEND":
                         act.extend()
                     else:
-                        act.retract()
+                        fsm_retracted = fsm_holder[0].manual_retract()
+                        if not fsm_retracted:
+                            act.retract()
+                        else:
+                            # State changed — update runtime immediately so log reflects it
+                            runtime["feeder_state"] = fsm_holder[0].state.name
+                            print(f"[FSM] FEEDING -> {runtime['feeder_state']}", flush=True)
                     runtime["manual_override_until"] = time.monotonic() + 5.0
                     print("[MANUAL] Actuator override active for 5s", flush=True)
                     logger.log_event(
@@ -510,6 +521,7 @@ def main() -> int:
             if s_up == "RETRACT":
                 success = fsm_holder[0].manual_retract()
                 if success:
+                    runtime["manual_override_until"] = time.monotonic() + 5.0  # ← here
                     logger.log_event(
                         state=fsm_holder[0].state.name,
                         enable_flag=runtime["enable"],
@@ -556,7 +568,7 @@ def main() -> int:
                     # motion_threshold — routes to active mode's threshold
                     if key_l in ("mt", "motion_threshold"):
                         f = float(value)
-                        if not (5.0 <= f <= 200.0):
+                        if not (10.0 <= f <= 100.0):
                             return "ERR OUT_OF_RANGE motion_threshold 5 200"
                         if runtime["fsm_mode"] == "INVERSE":
                             runtime["inverse_motion_threshold"] = f
@@ -741,6 +753,8 @@ def main() -> int:
             tick_hz = 20.0
             tick_dt = 1.0 / tick_hz
             last_radar_seq = -1
+            last_radar_time = 0.0
+            RADAR_STALE_S = 1.0
             BLE_TIMEOUT_S = 30.0
 
             while True:
@@ -785,16 +799,21 @@ def main() -> int:
                     rr = radar.get_latest()
                     if rr.valid and rr.seq != last_radar_seq:
                         last_radar_seq = rr.seq
+                        last_radar_time = time.monotonic()
                         radar_zone = str(rr.bin_index) if rr.bin_index is not None else ""
                         threat = rr.threat
                         radar_distance_m = rr.distance_m
-                        print(
-                            f"[RADAR] seq={rr.seq} bin={rr.bin_index} "
-                            f"dist={rr.distance_m:.2f}m threat={rr.threat}",
-                            flush=True,
-                        )
+                        runtime["radar_distance_m"] = rr.distance_m
+                        runtime["radar_threat"] = int(rr.threat)
+                        print(f"[RADAR] seq={rr.seq} bin={rr.bin_index} "
+                              f"dist={rr.distance_m:.2f}m threat={rr.threat}", flush=True)
                         if sensor_fusion:
                             sensor_fusion.update_radar(rr.timestamp)
+
+                # Only evict if radar is allowed but going stale — not if it's intentionally gated
+                if radar_allowed and (time.monotonic() - last_radar_time) > RADAR_STALE_S:
+                    runtime["radar_distance_m"] = None
+                    radar_distance_m = None
 
                 motion_magnitude = runtime.get("vision_motion", 0.0)
                 fused_threat = threat
@@ -803,12 +822,6 @@ def main() -> int:
                     fused_threat = sensor_fusion.fused_threat(threat, motion_magnitude, radar_distance_m)
                     runtime["fused_threat"] = int(fused_threat)
                     runtime["radar_fused_threat"] = bool(fused_threat)
-
-                if radar:
-                    rr_latest = radar.get_latest()
-                    if rr_latest.valid:
-                        runtime["radar_distance_m"] = rr_latest.distance_m
-                        runtime["radar_threat"] = int(rr_latest.threat)
 
                 if not cam_state["active"]:
                     override_active = time.monotonic() < runtime["manual_override_until"]

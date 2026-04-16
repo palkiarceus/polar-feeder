@@ -189,15 +189,12 @@ class FeederFSM:
             return
 
     def manual_retract(self, now: float | None = None) -> bool:
-        """
-        Manually retract from FEEDING state (operator command).
-
-        Returns True if retraction was performed, False if not in FEEDING.
-        """
         if self.state != State.FEEDING:
             return False
         now = now if now is not None else time.monotonic()
         self.actuator.retract()
         self._lure_extended_once = False
-        self._set_state(State.IDLE)
+        self._set_state(State.COOLDOWN, deadline=now + self.cooldown_s)  # ← was IDLE
+        print("[LURE FSM] Manual retract from FEEDING -> COOLDOWN", flush=True)
         return True
+
