@@ -47,6 +47,7 @@ class CsvSessionLogger:
             "vision_motion",        # Raw motion magnitude float
             "vision_threat",        # 0/1 (motion >= threshold)
             "camera_active",        # 0/1
+            "detection_time_s",     # time for detection of bear 
 
             # --- Radar ---
             "radar_dist_m",         # Float distance in meters
@@ -56,6 +57,13 @@ class CsvSessionLogger:
 
             # --- Fusion ---
             "fused_threat",         # 0/1
+            
+            # In fieldnames list, add after "fused_threat":
+            "noise_buffer_multiplier",   # INVERSE — how forgiving jitter buffer is
+            "center_motion",             # Vision component 1 — lateral movement
+            "size_change",               # Vision component 2 — approach toward camera
+            "radar_bin",                 # Raw bin index as int for zone analysis
+            "fsm_substate",              # e.g. "still_since_elapsed" for INVERSE timer progress
 
             # --- Tunable Params (snapshot at log time) ---
             "motion_threshold",     # Current live value
@@ -124,6 +132,12 @@ class CsvSessionLogger:
             "result": "",
             "fault_code": "",
             "notes": "",
+            "noise_buffer_multiplier": "",
+            "center_motion": "",
+            "size_change": "",
+            "radar_bin": "",
+            "fsm_substate": "",
+            "detection_time_s": "",
         }
 
     def log_event(
@@ -178,6 +192,12 @@ class CsvSessionLogger:
         stillness_raw: float = 0.0,
         stillness_filtered: float = 0.0,
         notes: str = "",
+        noise_buffer_multiplier: float = 0.0,
+        center_motion: float = 0.0,
+        size_change: float = 0.0,
+        radar_bin: str = "",
+        fsm_substate: str = "",
+        detection_time_s: float = 0.0,
     ) -> None:
         row = self._base_row()
         row.update({
@@ -203,6 +223,12 @@ class CsvSessionLogger:
             "stillness_raw": f"{stillness_raw:.3f}",
             "stillness_filtered": f"{stillness_filtered:.3f}",
             "notes": notes,
+            "noise_buffer_multiplier": f"{noise_buffer_multiplier:.2f}",
+            "center_motion": f"{center_motion:.3f}",
+            "size_change": f"{size_change:.3f}",
+            "radar_bin": radar_bin,
+            "fsm_substate": fsm_substate,
+            "detection_time_s": f"{detection_time_s:.4f}",
         })
         self._write(row)
 

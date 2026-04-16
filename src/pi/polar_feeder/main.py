@@ -332,7 +332,7 @@ def main() -> int:
                         )
 
                     if frame_index % 20 == 0:
-                        logger.log_telemetry(
+                            logger.log_telemetry(
                             state=new_state,
                             enable_flag=runtime["enable"],
                             fsm_mode=runtime["fsm_mode"],
@@ -353,6 +353,11 @@ def main() -> int:
                             manual_override_active=int(override_active),
                             stillness_raw=motion,
                             stillness_filtered=motion,
+                            noise_buffer_multiplier=runtime["inverse_noise_buffer_multiplier"],
+                            center_motion=local_tracker._last_center_motion,
+                            size_change=local_tracker._last_size_change,
+                            radar_bin=runtime["radar_last_bin"],
+                            detection_time_s=(dtimeend - dtimestart) if obj_count > 0 else 0.0,
                         )
 
             except Exception as e:
