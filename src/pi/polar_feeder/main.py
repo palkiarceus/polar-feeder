@@ -166,7 +166,7 @@ def main() -> int:
             from picamera2 import Picamera2
             import cv2
             from ultralytics import YOLO
-            modelload = "yolov8n.pt"
+            modelload = "yolo26n_ncnn_model"
             print("[Model] Model Loaded =", modelload, flush=True)
             print("[CAMERA] Thread starting...", flush=True)
 

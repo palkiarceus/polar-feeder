@@ -285,28 +285,52 @@ class BleServer:
         # so clients can poll for updates even if notifications aren't supported
         print("[BLE] No notify method available on this bluezero version; TX is readable (poll/read to get updates).", flush=True)
 
+    def _on_connect(self, addr):
+        print(f"[BLE] Connected: {addr}", flush=True)
+        self._rx_buf = ""   # IMPORTANT: clears stale partial commands
 
+    def _on_disconnect(self, addr):
+        print(f"[BLE] Disconnected: {addr}", flush=True)
+        self._rx_buf = ""
+    def stop(self):
+        if self._p:
+            try:
+                self._p.unpublish()
+            except Exception:
+                pass
+            self._p = None
+            
+    
     def start(self):
-        """
-        Initialize and advertise the BLE server.
-        
-        This method:
-        1. Creates a Peripheral object using the specified BLE adapter
-        2. Adds the primary service with UUIDs
-        3. Adds the RX characteristic (for receiving client commands)
-        4. Adds the TX characteristic (for sending responses to clients)
-        5. Publishes the service to make the device discoverable via BLE scans
-        
-        After calling this, the device will appear in BLE scans and clients can connect.
-        """
-        print("BLE Server Starting", flush=True)
-        self._p = peripheral.Peripheral(adapter_address=self.adapter_addr, local_name=self.name)
+        if self._p is not None:
+            try:
+                self._p.unpublish()
+            except Exception:
+                pass
+            self._p = None
+            time.sleep(1)
 
-        # Add the primary service with the Nordic UART Service UUID
+        print("BLE Server Starting", flush=True)
+
+        # Use bluetoothctl to reset adapter state cleanly — avoids hciconfig conflicts
+        subprocess.run(["bluetoothctl", "power", "off"], capture_output=True)
+        time.sleep(1)
+        subprocess.run(["bluetoothctl", "power", "on"], capture_output=True)
+        time.sleep(1)
+        subprocess.run(["bluetoothctl", "pairable", "on"], capture_output=True)
+        subprocess.run(["bluetoothctl", "discoverable", "on"], capture_output=True)
+        time.sleep(1)
+
+        self._p = peripheral.Peripheral(
+            adapter_address=self.adapter_addr,
+            local_name=self.name
+        )
+
+        self._p.on_connect = self._on_connect
+        self._p.on_disconnect = self._on_disconnect
+
         self._p.add_service(srv_id=self._srv_id, uuid=SERVICE_UUID, primary=True)
 
-        # RX Characteristic: Receives commands from BLE clients
-        # Flags "write" and "write-without-response" allow clients to send data without waiting for acknowledgment
         self._p.add_characteristic(
             srv_id=self._srv_id,
             chr_id=self._rx_id,
@@ -314,37 +338,18 @@ class BleServer:
             flags=["write-without-response"],
             value=_str_to_bytes_list(""),
             notifying=False,
-            write_callback=self._on_write_rx,  # Callback triggered when client writes
+            write_callback=self._on_write_rx,
         )
 
-        # TX Characteristic: Sends responses to BLE clients
-        # Flags "notify" and "read" allow clients to receive data via notifications or polling
         self._p.add_characteristic(
             srv_id=self._srv_id,
             chr_id=self._tx_id,
             uuid=TX_CHAR_UUID,
             flags=["notify", "read"],
             value=_str_to_bytes_list(self._tx_value),
-            notifying=True,  # Start with notifications enabled
-            read_callback=self._read_tx,  # Callback for clients that read instead of listening to notifications
+            notifying=True,
+            read_callback=self._read_tx,
         )
 
         print("BLE Publishing Now", flush=True)
-        # Start a persistent bluetoothctl agent process that stays alive
-        # to handle pairing requests automatically. Must be persistent
-        # (not one-shot with quit) so it responds immediately when Android
-        # initiates pairing at any point after connection.
-        try:
-            self._agent_proc = subprocess.Popen(
-                ["bluetoothctl"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            self._agent_proc.stdin.write(b"agent NoInputNoOutput\ndefault-agent\n")
-            self._agent_proc.stdin.flush()
-            print("[BLE] Persistent auto-pair agent started", flush=True)
-        except Exception as e:
-            self._agent_proc = None
-            print(f"[BLE] Agent start warning: {e}", flush=True)
         self._p.publish()
