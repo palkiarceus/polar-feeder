@@ -1,8 +1,14 @@
 {
-  "stillness": {
-    "publish_hz": 5,
-    "trigger_threshold": 0.85,
-    "min_duration_s": 2.0
+  "lure": {
+    "motion_threshold": 30.0,
+    "retract_delay_ms": 500,
+    "cooldown_s": 2.0
+  },
+  "inverse": {
+    "motion_threshold": 20.0,
+    "stillness_min_duration_s": 1.5,
+    "noise_buffer_multiplier": 1.5,
+    "cooldown_s": 2.0
   },
   "logging": {
     "enabled": true,
@@ -12,17 +18,22 @@
   },
   "radar": {
     "enabled": true,
-    "port": "/dev/ttyAMA0",
+    "port": "/dev/ttyACM0",
     "baud": 115200,
     "timeout_s": 0.1,
     "zone_m": [1.0, 2.0, 3.0],
-    "distance_jump_m": 0.20
+    "distance_jump_m": 0.20,
+    "detection_distance_m": 3.0
   },
   "safety": {
-    "ble_disconnect_safe_idle": true
+    "ble_disconnect_safe_idle": false
   },
   "actuator": {
-    "retract_delay_ms": 2500,
-    "pulse_ms": 200
+    "pulse_ms": 200,
+    "feeding_distance_m": 0.5
+  },
+  "vision": {
+    "enabled": true,
+    "sync_window_s": 0.5
   }
 }
