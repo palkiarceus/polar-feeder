@@ -22,7 +22,6 @@ from datetime import datetime, UTC
 from pathlib import Path
 import threading
 import lgpio
-import os
 
 from polar_feeder.config.loader import load_config
 from polar_feeder.logging.csv_logger import CsvSessionLogger, pick_log_dir
@@ -50,9 +49,9 @@ def main() -> int:
     cfg = load_config(args.config)
 
     import polar_feeder
-    import polar_feeder.actuator as actmod
+    import polar_feeder.actuator
     print("[PATH] polar_feeder pkg:", polar_feeder.__file__, flush=True)
-    print("[PATH] actuator mod:", actmod.__file__, flush=True)
+    print("[PATH] actuator mod:", polar_feeder.actuator.__file__, flush=True)
 
     # ===== BLE MODE =====
     if args.ble_test:
@@ -94,11 +93,10 @@ def main() -> int:
             "detection_distance_m": float(cfg.radar.detection_distance_m),
             "vision_enabled": bool(cfg.vision.enabled),
             "sync_window_s": float(cfg.vision.sync_window_s),
-            "pulse_ms": int(cfg.actuator.pulse_ms),
+            "pulse_ms": int(cfg.actuator.pulse_ms),  # stored for status; current RF replay uses pre-recorded pulse files
             "feeding_distance_m": float(cfg.actuator.feeding_distance_m),
 
             # --- Live state (updated by camera thread / radar loop) ---
-            "actuator_cmd": "IDLE",
             "feeder_state": "IDLE",
             "radar_last_bin": "",
             "radar_threat": 0,
@@ -492,7 +490,6 @@ def main() -> int:
                 val = s.split("=", 1)[1].strip().upper()
                 if val not in ("EXTEND", "RETRACT"):
                     return "ERR BAD_VALUE ACTUATOR"
-                runtime["actuator_cmd"] = val
                 try:
                     if val == "EXTEND":
                         act.extend()
@@ -563,7 +560,6 @@ def main() -> int:
             # rd/retract_delay_ms is LURE-only.
             if s_up.startswith("SET "):
                 rest = s[4:].strip()
-                print(f"[SET DEBUG] s={s!r} rest={rest!r}", flush=True)
                 if "=" not in rest:
                     return "ERR BAD_FORMAT SET"
                 key, value = [x.strip() for x in rest.split("=", 1)]
@@ -637,10 +633,10 @@ def main() -> int:
                         if not (50 <= n <= 1000):
                             return "ERR OUT_OF_RANGE pulse_ms 50 1000"
                         runtime["pulse_ms"] = n
-                        try:
-                            act.pulse_s = n / 1000.0
-                        except Exception:
-                            pass
+                        # NOTE: pulse_ms is currently retained for status/logging only.
+                        # The current RF replay implementation uses pre-recorded signal
+                        # timings stored in JSON files, so this setting is not applied
+                        # directly to transmission duration.
                         canonical = "pulse_ms"
 
                     elif key_l == "telemetry_hz":

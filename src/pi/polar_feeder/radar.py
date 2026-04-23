@@ -54,7 +54,7 @@ class RadarReading:
     speed_mps: Optional[float] = None
     threat: bool = False
     valid: bool = False
-    seq: int = 0  # Fixed: removed duplicate
+    seq: int = 0
 
 
 class RadarReader:
@@ -89,7 +89,7 @@ class RadarReader:
         port: str,
         baud: int = 115200,
         timeout_s: float = 0.1,
-        distance_jump_m: float = 0.50,  # Fixed: removed duplicate
+        distance_jump_m: float = 0.50,
     ):
         """
         Initialize the radar reader.
@@ -187,7 +187,7 @@ class RadarReader:
                 speed_mps=self._latest.speed_mps,
                 threat=self._latest.threat,
                 valid=self._latest.valid,
-                seq=self._latest.seq,  # Fixed: removed duplicate
+                seq=self._latest.seq,
             )
 
     def _run(self):
@@ -284,5 +284,5 @@ class RadarReader:
             speed_mps=speed_mps,
             threat=threat,
             valid=True,
-            seq=self._seq,  # Fixed: removed duplicate
+            seq=self._seq,
         )

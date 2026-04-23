@@ -1,3 +1,13 @@
+"""
+Legacy YOLO detection helper for Polar Feeder.
+
+This script is an experimental helper and is not used by the primary
+BLE-based feeder application in `main.py`.
+
+It provides YOLO detection, motion scoring, and a simple demo pipeline for
+vision development. Prefer the main application entrypoint for production use.
+"""
+
 import os
 import sys
 import argparse
@@ -19,7 +29,7 @@ _model = None
 _vision_tracker = None
 _cfg = None
 
-def init_yolo_for_ble(model_path="yolo26n.pt.pt"):
+def init_yolo_for_ble(model_path="yolo26n.pt"):
     """Initialize YOLO model and vision tracker for BLE mode."""
     global _model, _vision_tracker, _cfg
     if _model is None:
@@ -61,7 +71,7 @@ def detect_frame(frame):
         det = _vision_tracker.parse_yolo_output(yolo_block)
         if det is not None:
             motion = _vision_tracker.compute_motion(det)
-            threat = motion >= _cfg.vision.motion_threshold
+            threat = motion >= _cfg.lure.motion_threshold
     
     return threat, motion
 
@@ -186,7 +196,7 @@ fsm = FeederFSM(
     actuator=act,
     retract_delay_ms=int(cfg.actuator.retract_delay_ms),
     cooldown_s=2.0,
-    motion_threshold=float(cfg.vision.motion_threshold),
+    motion_threshold=float(cfg.lure.motion_threshold),
     feeding_distance_m=float(cfg.actuator.feeding_distance_m),
     detection_distance_m=float(cfg.radar.detection_distance_m),
 )
@@ -264,7 +274,7 @@ vision_tracker = VisionTracker()
 
 def _send_vision_to_fsm(det, motion_magnitude):
     """Bridge from YOLO to FSM."""
-    is_threat = motion_magnitude >= float(cfg.vision.motion_threshold)
+    is_threat = motion_magnitude >= float(cfg.lure.motion_threshold)
     fsm.tick(
         enable=feeder_enabled,
         threat=is_threat,

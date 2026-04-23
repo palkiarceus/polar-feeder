@@ -31,12 +31,12 @@ from pathlib import Path
 # Signal File Loading
 # ============================================================================
 
-# Prefer repo-root config/rf; fallback to package config for older layout
+# Prefer repo-root config/ directory; fallback to package config for older layout
 PKG_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PKG_DIR.parents[3]  # Navigate up: .../src/pi/polar_feeder -> repo root
 RF_DIR_CANDIDATES = [
-    REPO_ROOT / "config" / "rf",  # New layout: config/rf/ directory
-    PKG_DIR / "config",            # Fallback: legacy package-local config
+    REPO_ROOT / "config",          # Repository config directory
+    PKG_DIR / "config",            # Package-local config fallback
 ]
 
 
