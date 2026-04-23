@@ -28,6 +28,12 @@
   - Tuning guidelines
   - **Read this for:** Understanding and modifying configuration
 
+- **[HARDWARE_ADAPTATION.md](HARDWARE_ADAPTATION.md)**
+  - How to adapt software for new actuator or sensor hardware
+  - Where to add hardware-specific code safely
+  - Example adaptation scenarios
+  - **Read this for:** hardware integration and platform changes
+
 - **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** (380+ lines)
   - Module quick reference table
   - FSM state diagram
@@ -92,8 +98,9 @@ All Python source files include comprehensive inline documentation:
 
 ### "I'm setting up hardware"
 1. Read: [CONFIG_GUIDE.md](CONFIG_GUIDE.md) hardware section
-2. Read: [QUICK_REFERENCE.md](QUICK_REFERENCE.md) file locations
-3. Read: [config/RF_SIGNALS_README.md](config/RF_SIGNALS_README.md) for RF setup
+2. Read: [HARDWARE_ADAPTATION.md](HARDWARE_ADAPTATION.md) for platform adaptation details
+3. Read: [QUICK_REFERENCE.md](QUICK_REFERENCE.md) file locations
+4. Read: [config/RF_SIGNALS_README.md](config/RF_SIGNALS_README.md) for RF setup
 
 ### "I need to record RF signals"
 1. Read: [config/RF_SIGNALS_README.md](config/RF_SIGNALS_README.md)

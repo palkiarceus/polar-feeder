@@ -48,6 +48,7 @@ Please use the generated docs for details:
 - `docs/DOCUMENTATION_INDEX.md` - master index (start here)
 - `docs/CODEBASE_DOCUMENTATION.md` - architecture and component deep dive
 - `docs/CONFIG_GUIDE.md` - config field definitions and examples
+- `docs/HARDWARE_ADAPTATION.md` - adapting Polar Feeder to new hardware
 - `docs/QUICK_REFERENCE.md` - command cheat sheet + quick commands
 - `docs/RPI5_QUICK_START.md` - Pi 5 specific setup/test flow
 - `config/RF_SIGNALS_README.md` - RF signal protocol and recording

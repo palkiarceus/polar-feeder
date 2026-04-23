@@ -237,6 +237,7 @@ The Polar Feeder is an intelligent food dispensing system that uses multiple sen
 - `config/config.example.json` - Main configuration
 - `config/schema.json` - JSON schema for validation
 - `CONFIG_GUIDE.md` - Detailed explanation of settings
+- `HARDWARE_ADAPTATION.md` - New hardware configuration and adaptation guidance
 
 **Main Sections:**
 1. **stillness** - Motion detection thresholds
@@ -250,6 +251,26 @@ The Polar Feeder is an intelligent food dispensing system that uses multiple sen
 cfg = load_config("config/config.example.json")
 retract_delay = cfg.actuator.retract_delay_ms  # 2500 (ms)
 ```
+
+---
+
+## Hardware Adaptation and New Hardware Support
+
+The system is designed so that new hardware can be added without changing the core FSM and BLE logic. Follow these principles:
+
+- Keep hardware-specific code isolated to `actuator.py`, `transmittingfunc.py`, and `radar.py`.
+- Preserve the `extend()`, `retract()`, and `extend_then_retract()` actuator API.
+- Preserve the `RadarReader`/`RadarReading` sensor API or provide a compatible adapter.
+- Add new config options in `config/config.example.json` and validate them in `config/schema.json`.
+- Document platform-specific wiring, pin assignments, and behavior in `docs/HARDWARE_ADAPTATION.md`.
+
+### Recommended adaptation path
+
+1. Implement a new actuator module or class.
+2. Add a sensor module if required by new hardware.
+3. Update `main.py` to instantiate the new hardware class.
+4. Keep the BLE command interface unchanged unless new commands are essential.
+5. Test first in demo mode before connecting real hardware.
 
 ---
 
