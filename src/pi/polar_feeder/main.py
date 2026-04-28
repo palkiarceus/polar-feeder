@@ -72,7 +72,7 @@ def main() -> int:
         # only the active mode and make_fsm() always reads the right values.
         runtime = {
             "enable": 0,
-            "fsm_mode": "LURE",
+            "fsm_mode": "INVERSE",
 
             # --- LURE mode parameters ---
             "lure_motion_threshold": float(cfg.lure.motion_threshold),
@@ -96,7 +96,8 @@ def main() -> int:
             "sync_window_s": float(cfg.vision.sync_window_s),
             "pulse_ms": int(cfg.actuator.pulse_ms),
             "feeding_distance_m": float(cfg.actuator.feeding_distance_m),
-
+            "distance_jump_m": float(cfg.radar.distance_jump_m),
+            
             # --- Live state (updated by camera thread / radar loop) ---
             "actuator_cmd": "IDLE",
             "feeder_state": "IDLE",
@@ -220,7 +221,7 @@ def main() -> int:
                 print("[CAMERA] PiCamera2 started at 640x480", flush=True)
 
                 frame_index = 0
-                #SKIP = 2
+                SKIP = 2
 
                 while cam_state["active"]:
                     if not cam_state["active"]:
@@ -230,8 +231,8 @@ def main() -> int:
                     frame = cv2.cvtColor(frame_bgra, cv2.COLOR_BGRA2BGR)
                     frame_index += 1
 
-                    #if frame_index % SKIP != 0:
-                        #continue
+                    if frame_index % SKIP != 0:
+                        continue
 
                     results = model(frame, classes=[21], verbose=False)
 
@@ -332,7 +333,7 @@ def main() -> int:
                         )
 
                     if frame_index % 20 == 0:
-                            logger.log_telemetry(
+                        logger.log_telemetry(
                             state=new_state,
                             enable_flag=runtime["enable"],
                             fsm_mode=runtime["fsm_mode"],
@@ -574,7 +575,7 @@ def main() -> int:
                     if key_l in ("mt", "motion_threshold"):
                         f = float(value)
                         if not (10.0 <= f <= 100.0):
-                            return "ERR OUT_OF_RANGE motion_threshold 5 200"
+                            return "ERR OUT_OF_RANGE motion_threshold 10 100"
                         if runtime["fsm_mode"] == "INVERSE":
                             runtime["inverse_motion_threshold"] = f
                             fsm_holder[0].motion_threshold = f
@@ -621,8 +622,7 @@ def main() -> int:
                         if hasattr(fsm_holder[0], 'noise_buffer_multiplier'):
                             fsm_holder[0].noise_buffer_multiplier = f
                         canonical = "inverse_noise_buffer_multiplier"
-
-                    elif key_l == "detection_distance_m":
+                    elif key_l == "detect_dist":
                         f = float(value)
                         if not (0.5 <= f <= 50.0):
                             return "ERR OUT_OF_RANGE detection_distance_m 0.5 50"
@@ -632,6 +632,25 @@ def main() -> int:
                             sensor_fusion.detection_distance_m = f
                         canonical = "detection_distance_m"
 
+                    elif key_l == "feed_dist":
+                        f = float(value)
+                        if not (0.1 <= f <= 5.0):
+                            return "ERR OUT_OF_RANGE feeding_distance_m 0.1 5.0"
+                        runtime["feeding_distance_m"] = f
+                        fsm_holder[0].feeding_distance_m = f
+                        if sensor_fusion:
+                            sensor_fusion.feeding_distance_m = f
+                        canonical = "feeding_distance_m"
+
+                    elif key_l == "djump":
+                        f = float(value)
+                        if not (0.05 <= f <= 2.0):
+                            return "ERR OUT_OF_RANGE distance_jump_m 0.05 2.0"
+                        runtime["distance_jump_m"] = f
+                        if radar:
+                            radar.distance_jump_m = f
+                        canonical = "distance_jump_m"
+                        
                     elif key_l == "pulse_ms":
                         n = int(value)
                         if not (50 <= n <= 1000):
@@ -701,6 +720,24 @@ def main() -> int:
                         f" camera_active={int(cam_state['active'])}"
                         f" bear_detected={bear_detected}"
                     )
+                response_str = (
+                    f"ACK STATUS"
+                    f" enable={runtime['enable']}"
+                    f" fsm_mode={runtime['fsm_mode']}"
+                    f" feeder_state={runtime['feeder_state']}"
+                    f" lure_mt={runtime['lure_motion_threshold']:.1f}"
+                    f" lure_rd={runtime['lure_retract_delay_ms']}"
+                    f" inv_mt={runtime['inverse_motion_threshold']:.1f}"
+                    f" inv_sm={runtime['inverse_stillness_min_duration_s']:.1f}"
+                    f" noise_buf={runtime['inverse_noise_buffer_multiplier']:.1f}"
+                    f" detect_dist={runtime['detection_distance_m']:.1f}"
+                    f" feed_dist={runtime['feeding_distance_m']:.1f}"
+                    f" radar_en={int(runtime['radar_enabled'])}"
+                    f" radar_dist={radar_dist_str}"
+                    f" override={override_active}"
+                    f"{vision_status}"
+                )
+                print(f"[STATUS RESPONSE] {response_str}", flush=True)
                 return (
                     f"ACK STATUS"
                     f" enable={runtime['enable']}"
@@ -710,9 +747,13 @@ def main() -> int:
                     f" lure_rd={runtime['lure_retract_delay_ms']}"
                     f" inv_mt={runtime['inverse_motion_threshold']:.1f}"
                     f" inv_sm={runtime['inverse_stillness_min_duration_s']:.1f}"
-                    f"{vision_status}"
+                    f" noise_buf={runtime['inverse_noise_buffer_multiplier']:.1f}"
+                    f" detect_dist={runtime['detection_distance_m']:.1f}"
+                    f" feed_dist={runtime['feeding_distance_m']:.1f}"
+                    f" radar_en={int(runtime['radar_enabled'])}"
                     f" radar_dist={radar_dist_str}"
                     f" override={override_active}"
+                    f"{vision_status}"
                 )
             # ----- SHUTDOWN -----
             if s_up == "SHUTDOWN":
@@ -758,7 +799,7 @@ def main() -> int:
             tick_hz = 20.0
             tick_dt = 1.0 / tick_hz
             last_radar_seq = -1
-            last_radar_time = 0.0
+            last_radar_time = time.monotonic()
             RADAR_STALE_S = 1.0
             BLE_TIMEOUT_S = 30.0
 

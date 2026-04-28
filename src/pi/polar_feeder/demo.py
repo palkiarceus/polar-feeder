@@ -91,7 +91,7 @@ def main():
         run_inference = (frame_index % FRAME_SKIP == 0)
 
         if run_inference:
-            results = model(frame, classes=[BEAR_CLASS], verbose=False)
+            results = model(frame, classes=[BEAR_CLASS], conf = 0.3, verbose=False)
             detections = results[0].boxes
             last_detections = []
 
